@@ -28,7 +28,9 @@ void main() {
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('photo_uploader_test_');
-    photo = File('${directory.path}/photo.png');
+    // Android stores the copy under a GUID, but multipart must use the original
+    // provider display name. Equal basenames would conceal this regression.
+    photo = File('${directory.path}/b531857e-1905-4680-be15-ff5c1fba02f9');
     await photo.writeAsBytes(base64Decode(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
     ));

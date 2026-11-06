@@ -5,7 +5,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -33,12 +32,21 @@ class UploadPage extends StatefulWidget {
   State<UploadPage> createState() => _UploadPageState();
 }
 
+// Keep the provider's display name separate from the local copy's basename.
+// XFile.name on native platforms can resolve to the local GUID path instead.
+class _SelectedPhoto {
+  const _SelectedPhoto({required this.path, required this.name});
+
+  final String path;
+  final String name;
+}
+
 class _UploadPageState extends State<UploadPage> {
   static const _addressKey = 'server_address';
   static const _exampleAddress = 'http://100.x.y.z:8000';
   static const _originals = MethodChannel('photo_uploader/originals');
   final _tag = TextEditingController();
-  final _photos = <XFile>[];
+  final _photos = <_SelectedPhoto>[];
   String _address = _exampleAddress;
   bool _deleteAfterUpload = true;
   bool _loading = true;
@@ -90,7 +98,10 @@ class _UploadPageState extends State<UploadPage> {
         ..clear()
         ..addAll((selection['photos'] as List).map((value) {
           final photo = value as Map;
-          return XFile(photo['path'] as String, name: photo['name'] as String);
+          return _SelectedPhoto(
+            path: photo['path'] as String,
+            name: photo['name'] as String,
+          );
         }));
       _uploaded = selection['uploaded'] as bool;
       _deleteAfterUpload = selection['deleteOriginals'] as bool;
@@ -186,7 +197,7 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
-  Future<void> _preview(XFile photo) => showDialog<void>(
+  Future<void> _preview(_SelectedPhoto photo) => showDialog<void>(
         context: context,
         builder: (context) => Dialog.fullscreen(
           child: Scaffold(

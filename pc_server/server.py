@@ -14,7 +14,21 @@ import uvicorn
 
 
 app = FastAPI(title="Photo Uploader")
-UPLOAD_ROOT = Path(__file__).resolve().parent / "uploads"
+UPLOAD_ROOT = Path(r"d:\\YProject\\AI_CCVS_JODAL\\2_Data\\samsung_upload_image\\")
+GUID_NAME = re.compile(
+    r"(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+    re.IGNORECASE,
+)
+IMAGE_EXTENSIONS = {
+    ".jpg", ".jpeg", ".jpe", ".png", ".gif", ".webp", ".bmp",
+    ".tif", ".tiff", ".heic", ".heif", ".avif", ".dng", ".raw",
+    ".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".pef", ".raf",
+}
+MIME_EXTENSIONS = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+    "image/webp": ".webp", "image/bmp": ".bmp", "image/tiff": ".tif",
+    "image/heic": ".heic", "image/heif": ".heif", "image/avif": ".avif",
+}
 
 
 def safe_name(value: str, fallback: str, limit: int = 100) -> str:
@@ -32,6 +46,60 @@ def safe_name(value: str, fallback: str, limit: int = 100) -> str:
     return cleaned
 
 
+def image_extension(header: bytes) -> str:
+    """Recognize common photo formats without decoding/re-encoding the image."""
+    if header.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return ".webp"
+    if header.startswith((b"II*\x00", b"MM\x00*")):
+        return ".tif"
+    if header.startswith(b"BM"):
+        return ".bmp"
+    if header[4:8] == b"ftyp":
+        box_size = int.from_bytes(header[:4], "big")
+        brands = {header[8:12]} | {
+            header[offset:offset + 4]
+            for offset in range(16, min(box_size, len(header)), 4)
+        }
+        if brands & {b"avif", b"avis"}:
+            return ".avif"
+        if brands & {b"heic", b"heix", b"hevc", b"hevx"}:
+            return ".heic"
+        if brands & {b"mif1", b"msf1"}:
+            return ".heif"
+    return ""
+
+
+def upload_filename(upload: UploadFile, stamp: str, index: int) -> str:
+    original = (upload.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    suffix = Path(original).suffix
+    # Inspect a small header and rewind so every uploaded byte is still saved.
+    upload.file.seek(0)
+    detected = image_extension(upload.file.read(512))
+    upload.file.seek(0)
+    if suffix.lower() in IMAGE_EXTENSIONS:
+        # Preserve genuine names and RAW extensions (DNG also has a TIFF header).
+        extension = suffix
+    else:
+        extension = detected or MIME_EXTENSIONS.get(
+            (upload.content_type or "").split(";", 1)[0].strip().lower(), ""
+        )
+    if not extension:
+        raise HTTPException(status_code=415, detail=(
+            f"Cannot identify image format: {original or '(no filename)'}. "
+            "Original photos have not been deleted."
+        ))
+    stem = safe_name(Path(original).stem if suffix else original, "")
+    if not stem or GUID_NAME.fullmatch(stem):
+        stem = f"{stamp}_{index:03d}"
+    return stem + extension
+
+
 def save_batch(files: list[UploadFile], tag: str) -> dict:
     UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -41,7 +109,7 @@ def save_batch(files: list[UploadFile], tag: str) -> dict:
     names = []
     try:
         for index, upload in enumerate(files, start=1):
-            name = safe_name(upload.filename or "", f"image_{index}.jpg")
+            name = upload_filename(upload, stamp, index)
             path = staging / name
             counter = 1
             while path.exists():
