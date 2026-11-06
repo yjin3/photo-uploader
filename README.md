@@ -9,7 +9,7 @@ Tailscale로 연결된 Android → PC 사진 전송 앱. 로컬 Flutter/Android 
 3. 완료된 실행의 **photo-uploader-apk** Artifact를 다운로드하고 압축을 풉니다.
 4. `app-arm64-v8a-release.apk`를 Android 스마트폰에 설치합니다.
 
-Java 17과 실행 시점의 최신 stable Flutter를 사용합니다. Android 최소 API는 24 이상이며 Flutter 기본값이 더 높으면 따릅니다. APK는 개인 설치용 debug 키로 서명합니다. CI에서 의존성을 해석하며 `pubspec.lock` 생성 후 저장소에 커밋하면 Dart 의존성 버전을 고정할 수 있습니다.
+Java 17과 실행 시점의 최신 stable Flutter를 사용합니다. Android 최소 API는 24 이상이며 Flutter 기본값이 더 높으면 따릅니다. APK는 개인 설치용 debug 키로 서명합니다. 검증한 Dart 의존성 버전은 저장소의 `pubspec.lock`에 고정합니다.
 
 빌드 시간을 줄이기 위해 업로드 대상인 ARM64 APK만 생성합니다. Flutter/Pub 및 Gradle 캐시를 재사용하고 Gradle 작업 캐시와 병렬 실행을 활성화했습니다. 첫 실행이나 SDK/의존성 변경 시에는 다운로드와 초기 컴파일이 필요합니다. 같은 브랜치에 연속으로 push하면 이전 실행을 취소하고 최신 실행만 진행합니다. 전체 ABI가 필요하면 워크플로의 `--target-platform android-arm64` 옵션을 제거하세요.
 

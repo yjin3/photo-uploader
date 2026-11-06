@@ -24,9 +24,10 @@ class PhotoUploaderApp extends StatelessWidget {
 }
 
 class UploadPage extends StatefulWidget {
-  const UploadPage({super.key, this.createClient});
+  const UploadPage({super.key, this.createClient, this.thumbnailBuilder});
 
   final http.Client Function()? createClient;
+  final Widget Function(String path)? thumbnailBuilder;
 
   @override
   State<UploadPage> createState() => _UploadPageState();
@@ -68,7 +69,11 @@ class _UploadPageState extends State<UploadPage> {
 
   void _showMessage(Object message, {Duration duration = const Duration(seconds: 10)}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.of(context);
+    // Replace messages immediately so an old exit animation cannot complete
+    // after the page or ScaffoldMessenger has been disposed.
+    messenger.removeCurrentSnackBar();
+    messenger.showSnackBar(
       SnackBar(
         content: Text('$message'),
         behavior: SnackBarBehavior.floating,
@@ -298,7 +303,6 @@ class _UploadPageState extends State<UploadPage> {
         _uploaded = false;
         _originalsDeleted = false;
       });
-      ScaffoldMessenger.of(context).clearSnackBars();
       _showMessage(
         _deleteAfterUpload ? '$count장 전송 및 원본 삭제 완료' : '$count장 전송 완료',
         duration: const Duration(seconds: 3),
@@ -373,7 +377,7 @@ class _UploadPageState extends State<UploadPage> {
                             itemBuilder: (context, index) => InkWell(
                               onTap: _busy || _uploaded
                                   ? null : () => _preview(_photos[index]),
-                              child: Image.file(
+                              child: widget.thumbnailBuilder?.call(_photos[index].path) ?? Image.file(
                                 File(_photos[index].path),
                                 fit: BoxFit.cover,
                                 cacheWidth: 400,

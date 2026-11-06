@@ -126,7 +126,11 @@ void main() {
   });
 
   Future<void> open(WidgetTester tester) async {
-    await tester.pumpWidget(MaterialApp(home: UploadPage(createClient: () {
+    await tester.pumpWidget(MaterialApp(home: UploadPage(
+      // These tests exercise selection, upload, and deletion. Keep thumbnail
+      // decoding independent so Image.file cannot retain a Windows fixture handle.
+      thumbnailBuilder: (_) => const SizedBox.expand(),
+      createClient: () {
       return MockClient((request) async {
         sends++;
         events.add('post');
@@ -146,14 +150,29 @@ void main() {
   }
 
   Future<void> pressAndWait(WidgetTester tester, String label, Future<void> done) async {
-    await tester.runAsync(() async {
-      await tester.tap(find.text(label));
-      await done.timeout(const Duration(seconds: 5));
-      // Drain the channel response and the async upload continuation.
-      await Future<void>.delayed(Duration.zero);
-    });
+    var completed = false;
+    done.then((_) => completed = true);
+    await tester.tap(find.text(label));
+    // File IO needs real event-loop time, while method-channel continuations
+    // and completers created by widget tests need the fake clock to be pumped.
+    // Awaiting the entire operation inside runAsync starves those continuations.
+    await pumpUntil(tester, () => completed, reason: 'Upload action: $label');
     await tester.pumpAndSettle();
   }
+
+  Future<void> waitForCameraDialog(WidgetTester tester, int count) => pumpUntil(
+        tester,
+        () => find.text('$count장 촬영 완료').evaluate().isNotEmpty,
+        reason: 'Camera confirmation after shot $count',
+      );
+
+  Future<void> waitForCameraDone(WidgetTester tester) => pumpUntil(
+        tester,
+        () => find.byType(AlertDialog).evaluate().isEmpty &&
+            find.text('PC로 전송').evaluate().isNotEmpty &&
+            testerButton('PC로 전송').onPressed != null,
+        reason: 'Camera session finished',
+      );
 
   void expectReadyForNextUpload() {
     expect(find.text('사진 선택 (0장)'), findsOneWidget);
@@ -257,12 +276,16 @@ void main() {
     selectedPhotos.clear();
     await open(tester);
     await tester.tap(find.text('카메라'));
-    await tester.pumpAndSettle();
+    await waitForCameraDialog(tester, 1);
     for (var count = 1; count <= 5; count++) {
       expect(find.text('$count장 촬영 완료'), findsOneWidget);
       expect(find.text('사진 선택 ($count장)'), findsOneWidget);
       await tester.tap(find.text(count < 5 ? '계속 촬영' : '촬영 완료'));
-      await tester.pumpAndSettle();
+      if (count < 5) {
+        await waitForCameraDialog(tester, count + 1);
+      } else {
+        await waitForCameraDone(tester);
+      }
     }
     expect(cameraShots, 5);
     expect(events, ['recover', 'capture', 'capture', 'capture', 'capture', 'capture']);
@@ -275,9 +298,9 @@ void main() {
   testWidgets('camera shots append to existing gallery selection', (tester) async {
     await open(tester);
     await tester.tap(find.text('카메라'));
-    await tester.pumpAndSettle();
+    await waitForCameraDialog(tester, 1);
     await tester.tap(find.text('촬영 완료'));
-    await tester.pumpAndSettle();
+    await waitForCameraDone(tester);
     expect(find.text('사진 선택 (2장)'), findsOneWidget);
     expect(selectedPhotos.map((item) => item['name']),
         ['photo.png', '20261106_153000_001.jpg']);
@@ -290,10 +313,10 @@ void main() {
     selectedPhotos.clear();
     await open(tester);
     await tester.tap(find.text('카메라'));
-    await tester.pumpAndSettle();
+    await waitForCameraDialog(tester, 1);
     cancelCapture = true;
     await tester.tap(find.text('계속 촬영'));
-    await tester.pumpAndSettle();
+    await waitForCameraDone(tester);
     expect(find.byType(AlertDialog), findsNothing);
     expect(find.text('사진 선택 (1장)'), findsOneWidget);
     expect(cameraShots, 1);
@@ -315,6 +338,24 @@ void main() {
     expect(events.last, 'pick');
     expect(find.text('사진 선택 (2장)'), findsOneWidget);
   });
+}
+
+Future<void> pumpUntil(
+  WidgetTester tester,
+  bool Function() condition, {
+  required String reason,
+}) async {
+  for (var attempt = 0; attempt < 300; attempt++) {
+    await tester.pump(const Duration(milliseconds: 20));
+    if (condition()) {
+      // Finish entrance/exit animations without waiting for every animation in
+      // the app: the busy spinner intentionally runs behind camera dialogs.
+      await tester.pump(const Duration(milliseconds: 400));
+      return;
+    }
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+  }
+  fail('Condition was not reached: $reason');
 }
 
 FilledButton testerButton(String label) {
