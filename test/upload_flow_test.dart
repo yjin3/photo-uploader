@@ -124,6 +124,9 @@ void main() {
     expect(exited.isCompleted, false);
     expect(events, isNot(contains('finish')));
     expect(find.textContaining('원본 삭제가 취소되었습니다.'), findsOneWidget);
+    expect(find.text('원본 삭제 / 종료 계속').hitTestable(), findsOneWidget);
+    expect(tester.getBottomRight(find.byType(SnackBar)).dy,
+        lessThanOrEqualTo(tester.getTopLeft(find.text('원본 삭제 / 종료 계속')).dy));
     cancelDeletion = false;
     await pressAndWait(tester, '원본 삭제 / 종료 계속', exited.future);
     expect(sends, 1);
@@ -143,6 +146,8 @@ void main() {
   testWidgets('restart after upload resumes original deletion without another POST', (tester) async {
     recoveredUpload = true;
     await open(tester);
+    expect(find.byType(SnackBar), findsOneWidget);
+    expect(find.text('원본 삭제 / 종료 계속').hitTestable(), findsOneWidget);
     await pressAndWait(tester, '원본 삭제 / 종료 계속', exited.future);
     expect(sends, 0);
     expect(events, ['recover', 'acknowledgeUpload', 'deleteOriginals', 'finish', 'exit']);

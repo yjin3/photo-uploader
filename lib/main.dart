@@ -62,7 +62,11 @@ class _UploadPageState extends State<UploadPage> {
   void _error(Object error) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$error'), duration: const Duration(seconds: 10)),
+      SnackBar(
+        content: Text('$error'),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 10),
+      ),
     );
   }
 
@@ -325,19 +329,25 @@ class _UploadPageState extends State<UploadPage> {
                 onChanged: locked ? null : (value) =>
                     setState(() => _deleteAfterUpload = value ?? true),
               ),
-              FilledButton.icon(
-                onPressed: _busy || _loading || _photos.isEmpty ? null : _upload,
-                icon: _busy
-                    ? const SizedBox(
-                        width: 18, height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.upload),
-                label: Text(_busy ? '처리 중…' : _uploaded
-                    ? (_exitPending ? '앱 종료 재시도' : '원본 삭제 / 종료 계속')
-                    : 'PC로 전송'),
-              ),
             ],
+          ),
+        ),
+      ),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: FilledButton.icon(
+            onPressed: _busy || _loading || _photos.isEmpty ? null : _upload,
+            icon: _busy
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.upload),
+            label: Text(_busy ? '처리 중…' : _uploaded
+                ? (_exitPending ? '앱 종료 재시도' : '원본 삭제 / 종료 계속')
+                : 'PC로 전송'),
           ),
         ),
       ),
