@@ -35,8 +35,8 @@ PC와 스마트폰 모두 Tailscale에 로그인하고 서로 연결되어 있�
 
 삭제 체크박스 기본값은 true입니다. Android 시스템 파일 선택기의 **이미지** 또는 **사진**에서 여러 사진을 선택하세요. 원본 URI를 보존하기 위해 Android에서는 `image_picker.pickMultiImage()` 대신 네이티브 `ACTION_OPEN_DOCUMENT`를 사용합니다. 업로드용 복사본의 경로와 원본 파일명을 별도로 보관하며 전송 시 원본 파일명을 사용합니다.
 
-PC가 모든 파일을 저장하고 HTTP 200을 반환한 뒤에만 원본 삭제를 요청합니다. Android 11 이상에서 Android가 원본 MediaStore URI를 제공하는 사진은 `MediaStore.createDeleteRequest()`의 시스템 확인 창에서 승인하면 실제 원본을 영구 삭제합니다. 그 외 문서 제공자와 Android 10 이하에서는 확인 창을 거쳐 선택한 원본 문서에 `DocumentsContract.deleteDocument()`를 호출하며, Android 10의 추가 시스템 승인도 처리합니다. 삭제 완료 뒤 업로드용 복사본을 정리하고 앱을 종료합니다. 파일명이나 용량으로 원본을 추측하지 않습니다.
+PC가 모든 파일을 저장하고 HTTP 200을 반환한 뒤에만 원본 삭제를 요청합니다. Android 11 이상에서 Android가 원본 MediaStore URI를 제공하는 사진은 `MediaStore.createDeleteRequest()`의 시스템 확인 창에서 승인하면 실제 원본을 영구 삭제합니다. 그 외 문서 제공자와 Android 10 이하에서는 확인 창을 거쳐 선택한 원본 문서에 `DocumentsContract.deleteDocument()`를 호출하며, Android 10의 추가 시스템 승인도 처리합니다. 삭제 완료 뒤 업로드용 복사본과 선택 목록을 정리하고 완료 메시지를 표시합니다. 앱은 열린 상태로 유지되어 다음 사진을 선택하고 전송할 수 있습니다. 삭제 체크를 해제한 경우에도 전송 완료 후 선택 목록을 비웁니다. 파일명이나 용량으로 원본을 추측하지 않습니다.
 
-삭제 취소 또는 실패 시 앱을 유지하고 오류를 표시합니다. **원본 삭제 / 종료 계속**을 누르면 재전송 없이 남은 삭제를 재시도합니다. 선택한 원본 URI와 전송 완료 상태, 개별 삭제 완료 상태를 로컬에 저장하므로 앱이 재시작되어도 이어서 처리합니다. 삭제를 지원하지 않는 제공자는 성공으로 처리하지 않습니다. 기기의 로컬 사진을 선택하세요. 클라우드 동기화 서비스의 원본/백업 보존 정책은 해당 서비스의 설정을 따릅니다.
+삭제 취소 또는 실패 시 목록을 유지하고 오류를 표시합니다. **전송 완료 처리 계속**을 누르면 재전송 없이 남은 처리를 재시도합니다. 선택한 원본 URI와 전송 완료 상태, 개별 삭제 완료 상태를 로컬에 저장하므로 앱이 재시작되어도 이어서 처리합니다. 삭제를 지원하지 않는 제공자는 성공으로 처리하지 않습니다. 기기의 로컬 사진을 선택하세요. 클라우드 동기화 서비스의 원본/백업 보존 정책은 해당 서비스의 설정을 따릅니다.
 
 참고: [Flutter Android 배포](https://docs.flutter.dev/deployment/android), [Android MediaStore 삭제](https://developer.android.com/training/data-storage/shared/media#remove-item), [DocumentsContract](https://developer.android.com/reference/android/provider/DocumentsContract).

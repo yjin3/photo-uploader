@@ -53,7 +53,6 @@ class _UploadPageState extends State<UploadPage> {
   bool _busy = false;
   bool _uploaded = false;
   bool _originalsDeleted = false;
-  bool _exitPending = false;
 
   @override
   void initState() {
@@ -67,13 +66,13 @@ class _UploadPageState extends State<UploadPage> {
     super.dispose();
   }
 
-  void _error(Object error) {
+  void _showMessage(Object message, {Duration duration = const Duration(seconds: 10)}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('$error'),
+        content: Text('$message'),
         behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 10),
+        duration: duration,
       ),
     );
   }
@@ -86,7 +85,7 @@ class _UploadPageState extends State<UploadPage> {
       final selection = await _originals.invokeMapMethod<String, dynamic>('recover');
       if (mounted && selection != null) _applySelection(selection);
     } catch (error) {
-      _error('초기화 실패: $error');
+      _showMessage('초기화 실패: $error');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -104,10 +103,12 @@ class _UploadPageState extends State<UploadPage> {
           );
         }));
       _uploaded = selection['uploaded'] as bool;
-      _deleteAfterUpload = selection['deleteOriginals'] as bool;
+      // Restore the uploaded batch's choice on recovery. A new selection keeps
+      // the user's current checkbox value for the next upload.
+      if (_uploaded) _deleteAfterUpload = selection['deleteOriginals'] as bool;
     });
     if (_uploaded) {
-      _error('이전 PC 전송이 완료되었습니다. 버튼을 눌러 원본 삭제/종료를 계속하세요.');
+      _showMessage('이전 PC 전송이 완료되었습니다. 버튼을 눌러 남은 처리를 완료하세요.');
     }
   }
 
@@ -191,7 +192,7 @@ class _UploadPageState extends State<UploadPage> {
       if (!mounted) return;
       if (selected != null) _applySelection(selected);
     } catch (error) {
-      _error('사진 선택 실패: $error');
+      _showMessage('사진 선택 실패: $error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -253,13 +254,23 @@ class _UploadPageState extends State<UploadPage> {
         _originalsDeleted = true;
       }
       await _originals.invokeMethod<void>('finish');
-      _exitPending = true;
-      await SystemNavigator.pop();
+      if (!mounted) return;
+      final count = _photos.length;
+      setState(() {
+        _photos.clear();
+        _uploaded = false;
+        _originalsDeleted = false;
+      });
+      ScaffoldMessenger.of(context).clearSnackBars();
+      _showMessage(
+        _deleteAfterUpload ? '$count장 전송 및 원본 삭제 완료' : '$count장 전송 완료',
+        duration: const Duration(seconds: 3),
+      );
     } on TimeoutException {
-      _error('전송 시간 초과. PC의 저장 여부를 확인한 후 재시도하세요.');
+      _showMessage('전송 시간 초과. PC의 저장 여부를 확인한 후 재시도하세요.');
     } catch (error) {
-      _error(_uploaded
-          ? 'PC 전송 완료. 원본 삭제 또는 앱 종료 미완료: $error'
+      _showMessage(_uploaded
+          ? 'PC 전송 완료. 원본 삭제 또는 완료 처리 미완료: $error'
           : '전송 실패: $error\nTailscale 연결, PC 서버와 방화벽을 확인하세요.');
     } finally {
       client.close();
@@ -357,7 +368,7 @@ class _UploadPageState extends State<UploadPage> {
                   )
                 : const Icon(Icons.upload),
             label: Text(_busy ? '처리 중…' : _uploaded
-                ? (_exitPending ? '앱 종료 재시도' : '원본 삭제 / 종료 계속')
+                ? '전송 완료 처리 계속'
                 : 'PC로 전송'),
           ),
         ),
