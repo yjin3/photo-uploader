@@ -17,6 +17,7 @@ void main() {
   late Directory directory;
   late File photo;
   late List<String> events;
+  late List<Map<String, String>> selectedPhotos;
   late Completer<void> finished;
   late Completer<void> requestHandled;
   late Completer<void> deleteRequested;
@@ -26,6 +27,9 @@ void main() {
   var deleteOriginals = true;
   var httpStatus = 200;
   var sends = 0;
+  var cameraShots = 0;
+  var cancelCapture = false;
+  var failCapture = false;
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('photo_uploader_test_');
@@ -36,6 +40,7 @@ void main() {
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
     ));
     events = [];
+    selectedPhotos = [{'path': photo.path, 'name': 'photo.png'}];
     finished = Completer<void>();
     requestHandled = Completer<void>();
     deleteRequested = Completer<void>();
@@ -45,6 +50,9 @@ void main() {
     deleteOriginals = true;
     httpStatus = 200;
     sends = 0;
+    cameraShots = 0;
+    cancelCapture = false;
+    failCapture = false;
     SharedPreferences.setMockInitialValues({
       'server_address': 'http://100.101.102.103:8000',
     });
@@ -53,16 +61,34 @@ void main() {
       switch (call.method) {
         case 'recover':
           return {
-            'photos': [{'path': photo.path, 'name': 'photo.png'}],
+            'photos': List.of(selectedPhotos),
             'uploaded': recoveredUpload,
             'deleteOriginals': deleteOriginals,
           };
         case 'pick':
+          selectedPhotos.add({'path': photo.path, 'name': 'photo.png'});
           return {
-            'photos': [{'path': photo.path, 'name': 'photo.png'}],
+            'photos': List.of(selectedPhotos),
             'uploaded': false,
             // After native finish(), the next selection has this default.
             'deleteOriginals': true,
+          };
+        case 'capture':
+          if (failCapture) {
+            throw PlatformException(code: 'NO_CAMERA', message: '카메라를 열 수 없습니다.');
+          }
+          if (!cancelCapture) {
+            cameraShots++;
+            selectedPhotos.add({
+              'path': photo.path,
+              'name': '20261106_153000_${cameraShots.toString().padLeft(3, '0')}.jpg',
+            });
+          }
+          return {
+            'photos': List.of(selectedPhotos),
+            'uploaded': false,
+            'deleteOriginals': true,
+            'captured': !cancelCapture,
           };
         case 'acknowledgeUpload':
           expect(call.arguments['deleteOriginals'], deleteOriginals);
@@ -78,6 +104,7 @@ void main() {
           if (failCleanup) {
             throw PlatformException(code: 'CLEANUP_FAILED', message: '완료 처리 실패');
           }
+          selectedPhotos.clear();
           return null;
         default:
           throw StateError('Unexpected native method: ${call.method}');
@@ -107,7 +134,10 @@ void main() {
         expect(request.headers['content-type'], contains('multipart/form-data'));
         final body = latin1.decode(request.bodyBytes);
         expect(body, contains('name="tag"'));
-        expect(body, contains('name="files"; filename="photo.png"'));
+        for (final selected in selectedPhotos) {
+          expect(body, contains('name="files"; filename="${selected['name']}"'));
+        }
+        expect(RegExp('name="files"; filename=').allMatches(body).length, selectedPhotos.length);
         if (!requestHandled.isCompleted) requestHandled.complete();
         return http.Response(httpStatus == 200 ? '{}' : 'disk full', httpStatus);
       });
@@ -128,7 +158,7 @@ void main() {
   void expectReadyForNextUpload() {
     expect(find.text('사진 선택 (0장)'), findsOneWidget);
     expect(find.byType(GridView), findsNothing);
-    expect(find.text('갤러리에서 사진을 선택하세요.'), findsOneWidget);
+    expect(find.text('갤러리에서 선택하거나 카메라로 촬영하세요.'), findsOneWidget);
     expect(find.text('PC로 전송'), findsOneWidget);
     expect(testerButton('PC로 전송').onPressed, isNull);
   }
@@ -221,6 +251,69 @@ void main() {
     expect(events.where((event) => event == 'deleteOriginals').length, 1);
     expect(events.where((event) => event == 'finish').length, 2);
     expectReadyForNextUpload();
+  });
+
+  testWidgets('five camera shots accumulate without gallery selection and upload together', (tester) async {
+    selectedPhotos.clear();
+    await open(tester);
+    await tester.tap(find.text('카메라'));
+    await tester.pumpAndSettle();
+    for (var count = 1; count <= 5; count++) {
+      expect(find.text('$count장 촬영 완료'), findsOneWidget);
+      expect(find.text('사진 선택 ($count장)'), findsOneWidget);
+      await tester.tap(find.text(count < 5 ? '계속 촬영' : '촬영 완료'));
+      await tester.pumpAndSettle();
+    }
+    expect(cameraShots, 5);
+    expect(events, ['recover', 'capture', 'capture', 'capture', 'capture', 'capture']);
+    await pressAndWait(tester, 'PC로 전송', finished.future);
+    expect(sends, 1);
+    expect(events.sublist(6), ['post', 'acknowledgeUpload', 'deleteOriginals', 'finish']);
+    expectReadyForNextUpload();
+  });
+
+  testWidgets('camera shots append to existing gallery selection', (tester) async {
+    await open(tester);
+    await tester.tap(find.text('카메라'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('촬영 완료'));
+    await tester.pumpAndSettle();
+    expect(find.text('사진 선택 (2장)'), findsOneWidget);
+    expect(selectedPhotos.map((item) => item['name']),
+        ['photo.png', '20261106_153000_001.jpg']);
+    await pressAndWait(tester, 'PC로 전송', finished.future);
+    expect(sends, 1);
+    expectReadyForNextUpload();
+  });
+
+  testWidgets('cancelling next camera shot retains earlier shots', (tester) async {
+    selectedPhotos.clear();
+    await open(tester);
+    await tester.tap(find.text('카메라'));
+    await tester.pumpAndSettle();
+    cancelCapture = true;
+    await tester.tap(find.text('계속 촬영'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('사진 선택 (1장)'), findsOneWidget);
+    expect(cameraShots, 1);
+    expect(testerButton('PC로 전송').onPressed, isNotNull);
+    await pressAndWait(tester, 'PC로 전송', finished.future);
+    expectReadyForNextUpload();
+  });
+
+  testWidgets('camera error preserves selection and leaves gallery usable', (tester) async {
+    failCapture = true;
+    await open(tester);
+    await tester.tap(find.text('카메라'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('카메라를 열 수 없습니다.'), findsOneWidget);
+    expect(find.text('사진 선택 (1장)'), findsOneWidget);
+    expect(sends, 0);
+    await tester.tap(find.text('사진 선택 (1장)'));
+    await tester.pumpAndSettle();
+    expect(events.last, 'pick');
+    expect(find.text('사진 선택 (2장)'), findsOneWidget);
   });
 }
 

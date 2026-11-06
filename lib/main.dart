@@ -198,6 +198,43 @@ class _UploadPageState extends State<UploadPage> {
     }
   }
 
+  Future<void> _capturePhotos() async {
+    setState(() => _busy = true);
+    var count = 0;
+    try {
+      while (mounted) {
+        final selection = await _originals.invokeMapMethod<String, dynamic>('capture');
+        if (!mounted || selection == null) return;
+        _applySelection(selection);
+        if (selection['captured'] != true) break;
+        count++;
+        final again = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('$count장 촬영 완료'),
+            content: Text('선택 목록에 총 ${_photos.length}장이 있습니다.\n계속 촬영하시겠어요?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('촬영 완료'),
+              ),
+              FilledButton.icon(
+                onPressed: () => Navigator.pop(context, true),
+                icon: const Icon(Icons.camera_alt),
+                label: const Text('계속 촬영'),
+              ),
+            ],
+          ),
+        );
+        if (again != true) break;
+      }
+    } catch (error) {
+      _showMessage('카메라 촬영 실패: $error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _preview(_SelectedPhoto photo) => showDialog<void>(
         context: context,
         builder: (context) => Dialog.fullscreen(
@@ -300,17 +337,31 @@ class _UploadPageState extends State<UploadPage> {
             children: [
               Text('서버: $_address'),
               const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: locked ? null : _pickPhotos,
-                icon: const Icon(Icons.photo_library),
-                label: Text('사진 선택 (${_photos.length}장)'),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: locked ? null : _pickPhotos,
+                      icon: const Icon(Icons.photo_library),
+                      label: Text('사진 선택 (${_photos.length}장)'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: locked ? null : _capturePhotos,
+                      icon: const Icon(Icons.camera_alt),
+                      label: const Text('카메라'),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 8),
               Expanded(
                 child: _loading
                     ? const Center(child: CircularProgressIndicator())
                     : _photos.isEmpty
-                        ? const Center(child: Text('갤러리에서 사진을 선택하세요.'))
+                        ? const Center(child: Text('갤러리에서 선택하거나 카메라로 촬영하세요.'))
                         : GridView.builder(
                             gridDelegate:
                                 const SliverGridDelegateWithFixedCrossAxisCount(
@@ -344,8 +395,8 @@ class _UploadPageState extends State<UploadPage> {
                 contentPadding: EdgeInsets.zero,
                 title: const Text('전송 후 원본 삭제'),
                 subtitle: const Text(
-                  'PC 전송 성공 후 삭제 확인 창이 표시됩니다. '
-                  '승인하면 기기 원본을 영구 삭제합니다.',
+                  'PC 전송 성공 후 선택하거나 촬영한 기기 원본을 삭제합니다. '
+                  '필요한 경우 삭제 확인 창이 표시됩니다.',
                 ),
                 value: _deleteAfterUpload,
                 onChanged: locked ? null : (value) =>
