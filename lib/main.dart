@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'camera_page.dart';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const PhotoUploaderApp());
@@ -24,10 +26,11 @@ class PhotoUploaderApp extends StatelessWidget {
 }
 
 class UploadPage extends StatefulWidget {
-  const UploadPage({super.key, this.createClient, this.thumbnailBuilder});
+  const UploadPage({super.key, this.createClient, this.thumbnailBuilder, this.createCamera});
 
   final http.Client Function()? createClient;
   final Widget Function(String path)? thumbnailBuilder;
+  final PhotoCamera Function()? createCamera;
 
   @override
   State<UploadPage> createState() => _UploadPageState();
@@ -50,6 +53,8 @@ class _UploadPageState extends State<UploadPage> {
   final _photos = <_SelectedPhoto>[];
   String _address = _exampleAddress;
   bool _deleteAfterUpload = true;
+  bool _cropMonitor = true;
+  String _cropSummary = '';
   bool _loading = true;
   bool _busy = false;
   bool _uploaded = false;
@@ -89,6 +94,7 @@ class _UploadPageState extends State<UploadPage> {
       if (mounted) setState(() => _address = address);
       final selection = await _originals.invokeMapMethod<String, dynamic>('recover');
       if (mounted && selection != null) _applySelection(selection);
+      if (selection?['warning'] != null) _showMessage(selection!['warning']);
     } catch (error) {
       _showMessage('초기화 실패: $error');
     } finally {
@@ -205,34 +211,20 @@ class _UploadPageState extends State<UploadPage> {
 
   Future<void> _capturePhotos() async {
     setState(() => _busy = true);
-    var count = 0;
     try {
-      while (mounted) {
-        final selection = await _originals.invokeMapMethod<String, dynamic>('capture');
-        if (!mounted || selection == null) return;
-        _applySelection(selection);
-        if (selection['captured'] != true) break;
-        count++;
-        final again = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: Text('$count장 촬영 완료'),
-            content: Text('선택 목록에 총 ${_photos.length}장이 있습니다.\n계속 촬영하시겠어요?'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('촬영 완료'),
-              ),
-              FilledButton.icon(
-                onPressed: () => Navigator.pop(context, true),
-                icon: const Icon(Icons.camera_alt),
-                label: const Text('계속 촬영'),
-              ),
-            ],
-          ),
-        );
-        if (again != true) break;
-      }
+      await _originals.invokeMethod<void>('prepareCamera');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).removeCurrentSnackBar();
+      await Navigator.of(context).push<void>(MaterialPageRoute(
+        builder: (context) => CameraPage(
+          createCamera: widget.createCamera,
+          onCaptured: (path) async {
+            final selection = await _originals.invokeMapMethod<String, dynamic>('registerCapture', {'path': path});
+            if (selection == null) throw StateError('촬영 사진의 저장 결과가 없습니다.');
+            if (mounted) _applySelection(selection);
+          },
+        ),
+      ));
     } catch (error) {
       _showMessage('카메라 촬영 실패: $error');
     } finally {
@@ -264,7 +256,8 @@ class _UploadPageState extends State<UploadPage> {
       if (!_uploaded) {
         final endpoint = _serverUri(_address).replace(path: '/upload');
         final request = http.MultipartRequest('POST', endpoint)
-          ..fields['tag'] = _tag.text;
+          ..fields['tag'] = _tag.text
+          ..fields['crop_monitor'] = _cropMonitor.toString();
         for (final photo in _photos) {
           request.files.add(await http.MultipartFile.fromPath(
             'files', photo.path, filename: photo.name,
@@ -285,6 +278,22 @@ class _UploadPageState extends State<UploadPage> {
         // Persist the acknowledgement before any original deletion, so a process
         // restart can resume deletion without sending the same batch again.
         _uploaded = true;
+        _cropSummary = '';
+        if (_cropMonitor) {
+          try {
+            final data = jsonDecode(utf8.decode(response.bodyBytes));
+            if (data is Map && data['crop_requested'] == true) {
+              final crops = data['cropped'] is List ? (data['cropped'] as List).length : 0;
+              _cropSummary = data['crop_warning']?.toString() ?? (crops > 0
+                  ? '모니터 자동 보정 $crops장 · 원본도 PC에 보관'
+                  : '모니터 테두리 미검출 · 원본 저장');
+            } else {
+              _cropSummary = '자동 자르기를 사용하려면 PC 서버도 업데이트하세요.';
+            }
+          } catch (_) {
+            _cropSummary = 'PC 저장 완료 · 자동 자르기 결과를 확인하지 못했습니다.';
+          }
+        }
       }
       if (!_originalsDeleted) {
         await _originals.invokeMethod<void>('acknowledgeUpload', {
@@ -304,7 +313,8 @@ class _UploadPageState extends State<UploadPage> {
         _originalsDeleted = false;
       });
       _showMessage(
-        _deleteAfterUpload ? '$count장 전송 및 원본 삭제 완료' : '$count장 전송 완료',
+        '${_deleteAfterUpload ? '$count장 전송 및 원본 삭제 완료' : '$count장 전송 완료'}'
+        '${_cropSummary.isEmpty ? '' : '\n$_cropSummary'}',
         duration: const Duration(seconds: 3),
       );
     } on TimeoutException {
@@ -396,6 +406,15 @@ class _UploadPageState extends State<UploadPage> {
                 ),
               ),
               CheckboxListTile(
+                key: const ValueKey('crop-monitor'),
+                contentPadding: EdgeInsets.zero,
+                title: const Text('모니터 화면 자동 자르기'),
+                subtitle: const Text('PC에서 보정 · 원본도 함께 보관'),
+                value: _cropMonitor,
+                onChanged: locked ? null : (value) => setState(() => _cropMonitor = value ?? true),
+              ),
+              CheckboxListTile(
+                key: const ValueKey('delete-originals'),
                 contentPadding: EdgeInsets.zero,
                 title: const Text('전송 후 원본 삭제'),
                 subtitle: const Text(

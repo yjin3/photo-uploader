@@ -3,7 +3,6 @@ package com.example.photo_uploader
 import android.Manifest
 import android.app.AlertDialog
 import android.app.RecoverableSecurityException
-import android.content.ClipData
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -33,7 +32,6 @@ class MainActivity : FlutterActivity() {
         private const val PICK = 4101
         private const val DELETE = 4102
         private const val LEGACY_DELETE = 4103
-        private const val CAPTURE = 4104
         private const val CAMERA_STORAGE = 4105
     }
 
@@ -52,10 +50,20 @@ class MainActivity : FlutterActivity() {
                 }
                 when (call.method) {
                     "recover" -> runWork(result) {
-                        recoverCameraPhoto()
-                        selection()
+                        var warning: String? = null
+                        try {
+                            state.getString("cameraImport", null)?.let {
+                                importCameraPhoto(JSONObject(it).getString("path"))
+                            }
+                            recoverCameraPhoto()
+                        } catch (error: Exception) {
+                            // A failed old external-camera output must not hide
+                            // all previously selected photos or block the app.
+                            warning = "이전 촬영 복구 미완료: ${error.message}"
+                        }
+                        selection() + mapOf("warning" to warning)
                     }
-                    "capture" -> {
+                    "prepareCamera" -> {
                         if (state.getBoolean("uploaded", false)) {
                             result.error("UPLOADED", "전송한 사진의 처리를 먼저 완료하세요.", null)
                         } else {
@@ -63,7 +71,16 @@ class MainActivity : FlutterActivity() {
                             if (Build.VERSION.SDK_INT < 29 &&
                                 checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
                                 requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), CAMERA_STORAGE)
-                            } else launchCamera()
+                            } else succeed(null)
+                        }
+                    }
+                    "registerCapture" -> {
+                        if (state.getBoolean("uploaded", false)) {
+                            result.error("UPLOADED", "전송한 사진의 처리를 먼저 완료하세요.", null)
+                        } else {
+                            val path = call.argument<String>("path")
+                            if (path == null) result.error("INVALID_PATH", "촬영 파일이 없습니다.", null)
+                            else runWork(result) { importCameraPhoto(path); selection() }
                         }
                     }
                     "pick" -> {
@@ -151,9 +168,15 @@ class MainActivity : FlutterActivity() {
         worker.execute {
             try {
                 val value = work()
-                runOnUiThread { succeed(value) }
+                runOnUiThread {
+                    if (pending === result) pending = null
+                    result.success(value)
+                }
             } catch (error: Exception) {
-                runOnUiThread { fail(error) }
+                runOnUiThread {
+                    if (pending === result) pending = null
+                    result.error("ORIGINAL_PHOTO_ERROR", error.message ?: error.toString(), null)
+                }
             }
         }
     }
@@ -168,17 +191,6 @@ class MainActivity : FlutterActivity() {
         val result = pending
         pending = null
         result?.error("ORIGINAL_PHOTO_ERROR", error.message ?: error.toString(), null)
-    }
-
-    private fun launchCamera() {
-        // If Android reclaimed the app during an earlier camera intent, recover
-        // only that exact output URI before allocating the next one.
-        worker.execute {
-            try {
-                recoverCameraPhoto()
-                runOnUiThread { createCameraIntent() }
-            } catch (error: Exception) { runOnUiThread { fail(error) } }
-        }
     }
 
     private fun recoverCameraPhoto() {
@@ -196,16 +208,40 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun createCameraIntent() {
-        try {
-            check(!state.contains("cameraPending")) {
-                "이전 촬영 결과가 남아 있습니다. 앱을 다시 열어 복구한 뒤 촬영하세요."
+    private fun importCameraPhoto(path: String) {
+        // A lost channel reply must not create a duplicate photo on retry.
+        if (records().any { it.optString("captureSource") == path }) {
+            state.getString("cameraImport", null)?.let {
+                val saved = JSONObject(it)
+                saved.optString("uri").takeIf { value -> value.isNotEmpty() }?.let { value ->
+                    acceptCameraPhoto(saved.put("uri", value))
+                }
             }
+            state.edit().remove("cameraImport").commit()
+            return
+        }
+        val source = File(path).canonicalFile
+        // String boundaries also work on Android 7; java.nio.file.Path requires
+        // API 26 and would crash an otherwise supported API 24/25 device.
+        val roots = listOfNotNull(cacheDir, externalCacheDir, filesDir).map { it.canonicalPath + File.separator }
+        check(roots.any { source.path.startsWith(it) } && source.isFile && source.length() > 0) {
+            "유효한 앱 촬영 파일이 아닙니다."
+        }
+        var capture = state.getString("cameraImport", null)?.let { JSONObject(it) }
+        check(capture == null || capture.getString("path") == path) {
+            "이전 사진 저장을 먼저 완료하세요."
+        }
+        if (capture == null) {
             val sequence = records().size + 1
             val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
             val name = "${stamp}_${String.format(Locale.US, "%03d", sequence)}.jpg"
+            capture = JSONObject().put("path", path).put("name", name)
+            check(state.edit().putString("cameraImport", capture.toString()).commit()) { "촬영 정보 저장 실패" }
+        }
+        val target = checkNotNull(capture)
+        if (!target.has("uri")) {
             val values = ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                put(MediaStore.Images.Media.DISPLAY_NAME, target.getString("name"))
                 put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
                 if (Build.VERSION.SDK_INT >= 29) {
                     put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/PhotoUploader")
@@ -213,33 +249,29 @@ class MainActivity : FlutterActivity() {
                 } else {
                     val directory = File(Environment.getExternalStoragePublicDirectory(
                         Environment.DIRECTORY_PICTURES), "PhotoUploader").apply { mkdirs() }
+                    val name = target.getString("name")
                     var output = File(directory, name)
                     var counter = 1
-                    while (output.exists()) output = File(directory, "${stamp}_${sequence}_${counter++}.jpg")
+                    while (output.exists()) output = File(directory, "${File(name).nameWithoutExtension}_${counter++}.jpg")
                     put(MediaStore.Images.Media.DATA, output.absolutePath)
                     put(MediaStore.Images.Media.DISPLAY_NAME, output.name)
                 }
             }
             val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
                 ?: throw IllegalStateException("촬영할 사진 저장 위치를 만들 수 없습니다.")
-            val capture = JSONObject().put("uri", uri.toString())
-                .put("name", values.getAsString(MediaStore.Images.Media.DISPLAY_NAME))
-                .put("completed", false)
-            if (!state.edit().putString("cameraPending", capture.toString()).commit()) {
+            target.put("uri", uri.toString())
+            if (!state.edit().putString("cameraImport", target.toString()).commit()) {
                 contentResolver.delete(uri, null, null)
                 throw IllegalStateException("촬영 정보 저장 실패")
             }
-            try {
-                startActivityForResult(Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                    putExtra(MediaStore.EXTRA_OUTPUT, uri)
-                    clipData = ClipData.newRawUri("Photo Uploader camera output", uri)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                }, CAPTURE)
-            } catch (error: Exception) {
-                discardCameraPhoto()
-                throw error
-            }
-        } catch (error: Exception) { fail(error) }
+        }
+        val uri = Uri.parse(target.getString("uri"))
+        val output = contentResolver.openOutputStream(uri, "wt")
+            ?: throw IllegalStateException("촬영 원본을 저장할 수 없습니다.")
+        output.use { destination -> source.inputStream().use { it.copyTo(destination) } }
+        acceptCameraPhoto(target)
+        check(state.edit().remove("cameraImport").commit()) { "촬영 완료 정보 저장 실패" }
+        source.delete()
     }
 
     private fun discardCameraPhoto() {
@@ -247,7 +279,6 @@ class MainActivity : FlutterActivity() {
         val uri = Uri.parse(JSONObject(capture).getString("uri"))
         contentResolver.delete(uri, null, null)
         check(state.edit().remove("cameraPending").commit()) { "취소한 촬영 정보 정리 실패" }
-        revokeUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
     }
 
     private fun acceptCameraPhoto(capture: JSONObject) {
@@ -263,6 +294,7 @@ class MainActivity : FlutterActivity() {
                 check(size > 0) { "카메라에서 사진 데이터를 저장하지 않았습니다." }
                 items.add(JSONObject().put("uri", uri.toString())
                     .put("path", file.absolutePath).put("name", capture.getString("name"))
+                    .put("captureSource", capture.optString("path"))
                     .put("kind", "camera").put("deleted", false))
                 save(items)
             } catch (error: Exception) {
@@ -275,8 +307,11 @@ class MainActivity : FlutterActivity() {
                 put(MediaStore.Images.Media.IS_PENDING, 0)
             }, null, null)
         }
-        check(state.edit().remove("cameraPending").commit()) { "촬영 완료 정보 저장 실패" }
-        revokeUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        state.getString("cameraPending", null)?.let {
+            if (JSONObject(it).optString("uri") == uri.toString()) {
+                check(state.edit().remove("cameraPending").commit()) { "촬영 완료 정보 저장 실패" }
+            }
+        }
     }
 
     @Deprecated("Uses the platform permission API for FlutterActivity compatibility")
@@ -284,7 +319,7 @@ class MainActivity : FlutterActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == CAMERA_STORAGE) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                launchCamera()
+                succeed(null)
             } else fail(SecurityException("사진 저장 권한이 필요합니다. 갤러리 선택은 계속 사용할 수 있습니다."))
         }
     }
@@ -293,23 +328,6 @@ class MainActivity : FlutterActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         when (requestCode) {
-            CAPTURE -> {
-                worker.execute {
-                    try {
-                        val capture = state.getString("cameraPending", null)
-                            ?: throw IllegalStateException("촬영 결과 정보가 없습니다.")
-                        if (resultCode == RESULT_OK) {
-                            val item = JSONObject(capture).put("completed", true)
-                            check(state.edit().putString("cameraPending", item.toString()).commit()) {
-                                "촬영 완료 상태 저장 실패"
-                            }
-                            acceptCameraPhoto(item)
-                        } else discardCameraPhoto()
-                        val value = selection() + ("captured" to (resultCode == RESULT_OK))
-                        runOnUiThread { succeed(value) }
-                    } catch (error: Exception) { runOnUiThread { fail(error) } }
-                }
-            }
             PICK -> {
                 // Even if Android reclaimed the process while the picker was open,
                 // persist its result so Dart's recover call can retrieve the URIs.

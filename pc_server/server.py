@@ -12,6 +12,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 import uvicorn
 
+from monitor_crop import crop_monitor_file
+
 
 app = FastAPI(title="Photo Uploader")
 UPLOAD_ROOT = Path(r"d:\\YProject\\AI_CCVS_JODAL\\2_Data\\samsung_upload_image\\")
@@ -100,13 +102,15 @@ def upload_filename(upload: UploadFile, stamp: str, index: int) -> str:
     return stem + extension
 
 
-def save_batch(files: list[UploadFile], tag: str) -> dict:
+def save_batch(files: list[UploadFile], tag: str, crop_monitor: bool = False) -> dict:
     UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = safe_name(tag.strip(), "", 60)
     base = stamp + (f"_{suffix}" if suffix else "")
     staging = Path(tempfile.mkdtemp(prefix=".upload-", dir=UPLOAD_ROOT))
     names = []
+    cropped_names = []
+    crop_warning = None
     try:
         for index, upload in enumerate(files, start=1):
             name = upload_filename(upload, stamp, index)
@@ -120,6 +124,22 @@ def save_batch(files: list[UploadFile], tag: str) -> dict:
                 output.flush()
                 os.fsync(output.fileno())
             names.append(path.name)
+            if crop_monitor:
+                cropped = staging / f".crop-{index}{path.suffix}"
+                try:
+                    did_crop = crop_monitor_file(path, cropped)
+                except ImportError:
+                    crop_warning = "PC 서버에 OpenCV 설치가 필요합니다. 원본을 저장했습니다."
+                    did_crop = False
+                except Exception:
+                    crop_warning = "자동 보정하지 못한 사진은 원본으로 저장했습니다."
+                    did_crop = False
+                if did_crop:
+                    originals = staging / "_originals"
+                    originals.mkdir(exist_ok=True)
+                    path.replace(originals / path.name)
+                    cropped.replace(path)
+                    cropped_names.append(path.name)
 
         # Reserve the destination atomically, including concurrent requests in
         # the same second. Publish only once every file has been fully written.
@@ -134,10 +154,14 @@ def save_batch(files: list[UploadFile], tag: str) -> dict:
         try:
             for name in names:
                 (staging / name).replace(destination / name)
+            if (staging / "_originals").is_dir():
+                (staging / "_originals").replace(destination / "_originals")
         except Exception:
             shutil.rmtree(destination)
             raise
-        return {"directory": destination.name, "files": names, "count": len(names)}
+        return {"directory": destination.name, "files": names, "count": len(names),
+                "cropped": cropped_names, "crop_requested": crop_monitor,
+                "crop_warning": crop_warning}
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -151,11 +175,12 @@ def health() -> dict:
 async def upload(
     files: Annotated[list[UploadFile], File()],
     tag: Annotated[str, Form()] = "",
+    crop_monitor: Annotated[bool, Form()] = False,
 ) -> dict:
     if not files:
         raise HTTPException(status_code=400, detail="No files supplied")
     try:
-        return await run_in_threadpool(save_batch, files, tag)
+        return await run_in_threadpool(save_batch, files, tag, crop_monitor)
     except OSError as error:
         raise HTTPException(status_code=500, detail=f"File save failed: {error}") from error
     finally:

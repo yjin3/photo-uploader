@@ -3,12 +3,15 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:camera/camera.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:photo_uploader/main.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'fake_camera.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -28,8 +31,8 @@ void main() {
   var httpStatus = 200;
   var sends = 0;
   var cameraShots = 0;
-  var cancelCapture = false;
-  var failCapture = false;
+  late FakePhotoCamera camera;
+  var failRegistration = false;
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('photo_uploader_test_');
@@ -51,8 +54,8 @@ void main() {
     httpStatus = 200;
     sends = 0;
     cameraShots = 0;
-    cancelCapture = false;
-    failCapture = false;
+    camera = FakePhotoCamera(photo.path);
+    failRegistration = false;
     SharedPreferences.setMockInitialValues({
       'server_address': 'http://100.101.102.103:8000',
     });
@@ -73,22 +76,20 @@ void main() {
             // After native finish(), the next selection has this default.
             'deleteOriginals': true,
           };
-        case 'capture':
-          if (failCapture) {
-            throw PlatformException(code: 'NO_CAMERA', message: '카메라를 열 수 없습니다.');
-          }
-          if (!cancelCapture) {
-            cameraShots++;
-            selectedPhotos.add({
-              'path': photo.path,
-              'name': '20261106_153000_${cameraShots.toString().padLeft(3, '0')}.jpg',
-            });
-          }
+        case 'prepareCamera':
+          return null;
+        case 'registerCapture':
+          expect(call.arguments['path'], startsWith('${photo.path}_'));
+          if (failRegistration) throw PlatformException(code: 'SAVE_FAILED', message: '사진 저장 실패');
+          cameraShots++;
+          selectedPhotos.add({
+            'path': photo.path,
+            'name': '20261106_153000_${cameraShots.toString().padLeft(3, '0')}.jpg',
+          });
           return {
             'photos': List.of(selectedPhotos),
             'uploaded': false,
             'deleteOriginals': true,
-            'captured': !cancelCapture,
           };
         case 'acknowledgeUpload':
           expect(call.arguments['deleteOriginals'], deleteOriginals);
@@ -130,6 +131,7 @@ void main() {
       // These tests exercise selection, upload, and deletion. Keep thumbnail
       // decoding independent so Image.file cannot retain a Windows fixture handle.
       thumbnailBuilder: (_) => const SizedBox.expand(),
+      createCamera: () => camera,
       createClient: () {
       return MockClient((request) async {
         sends++;
@@ -138,6 +140,7 @@ void main() {
         expect(request.headers['content-type'], contains('multipart/form-data'));
         final body = latin1.decode(request.bodyBytes);
         expect(body, contains('name="tag"'));
+        expect(body, contains('name="crop_monitor"'));
         for (final selected in selectedPhotos) {
           expect(body, contains('name="files"; filename="${selected['name']}"'));
         }
@@ -160,10 +163,11 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Future<void> waitForCameraDialog(WidgetTester tester, int count) => pumpUntil(
+  Future<void> waitForCameraShot(WidgetTester tester, int count) => pumpUntil(
         tester,
-        () => find.text('$count장 촬영 완료').evaluate().isNotEmpty,
-        reason: 'Camera confirmation after shot $count',
+        () => find.text('연속 촬영 · $count장').evaluate().isNotEmpty &&
+            tester.widget<FilledButton>(find.byKey(const ValueKey('camera-shutter'))).onPressed != null,
+        reason: 'Camera ready after shot $count',
       );
 
   Future<void> waitForCameraDone(WidgetTester tester) => pumpUntil(
@@ -230,7 +234,7 @@ void main() {
 
   testWidgets('unchecked deletion preserves originals and clears the completed list', (tester) async {
     await open(tester);
-    await tester.tap(find.byType(CheckboxListTile));
+    await tester.tap(find.byKey(const ValueKey('delete-originals')));
     await tester.pumpAndSettle();
     deleteOriginals = false;
     await pressAndWait(tester, 'PC로 전송', finished.future);
@@ -240,7 +244,7 @@ void main() {
 
   testWidgets('another batch uploads in the same app session and preserves checkbox choice', (tester) async {
     await open(tester);
-    await tester.tap(find.byType(CheckboxListTile));
+    await tester.tap(find.byKey(const ValueKey('delete-originals')));
     await tester.pumpAndSettle();
     deleteOriginals = false;
     await pressAndWait(tester, 'PC로 전송', finished.future);
@@ -249,7 +253,7 @@ void main() {
     await tester.tap(find.text('사진 선택 (0장)'));
     await tester.pumpAndSettle();
     expect(find.text('사진 선택 (1장)'), findsOneWidget);
-    expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value, false);
+    expect(tester.widget<CheckboxListTile>(find.byKey(const ValueKey('delete-originals'))).value, false);
     await pressAndWait(tester, 'PC로 전송', finished.future);
     expect(sends, 2);
     expect(events.where((event) => event == 'acknowledgeUpload').length, 2);
@@ -276,30 +280,29 @@ void main() {
     selectedPhotos.clear();
     await open(tester);
     await tester.tap(find.text('카메라'));
-    await waitForCameraDialog(tester, 1);
+    await waitForCameraShot(tester, 0);
     for (var count = 1; count <= 5; count++) {
-      expect(find.text('$count장 촬영 완료'), findsOneWidget);
-      expect(find.text('사진 선택 ($count장)'), findsOneWidget);
-      await tester.tap(find.text(count < 5 ? '계속 촬영' : '촬영 완료'));
-      if (count < 5) {
-        await waitForCameraDialog(tester, count + 1);
-      } else {
-        await waitForCameraDone(tester);
-      }
+      await tester.tap(find.byKey(const ValueKey('camera-shutter')));
+      await waitForCameraShot(tester, count);
+      expect(find.byType(AlertDialog), findsNothing);
     }
+    await tester.tap(find.text('완료 (5장)'));
+    await waitForCameraDone(tester);
     expect(cameraShots, 5);
-    expect(events, ['recover', 'capture', 'capture', 'capture', 'capture', 'capture']);
+    expect(events, ['recover', 'prepareCamera', ...List.filled(5, 'registerCapture')]);
     await pressAndWait(tester, 'PC로 전송', finished.future);
     expect(sends, 1);
-    expect(events.sublist(6), ['post', 'acknowledgeUpload', 'deleteOriginals', 'finish']);
+    expect(events.sublist(7), ['post', 'acknowledgeUpload', 'deleteOriginals', 'finish']);
     expectReadyForNextUpload();
   });
 
   testWidgets('camera shots append to existing gallery selection', (tester) async {
     await open(tester);
     await tester.tap(find.text('카메라'));
-    await waitForCameraDialog(tester, 1);
-    await tester.tap(find.text('촬영 완료'));
+    await waitForCameraShot(tester, 0);
+    await tester.tap(find.byKey(const ValueKey('camera-shutter')));
+    await waitForCameraShot(tester, 1);
+    await tester.tap(find.text('완료 (1장)'));
     await waitForCameraDone(tester);
     expect(find.text('사진 선택 (2장)'), findsOneWidget);
     expect(selectedPhotos.map((item) => item['name']),
@@ -309,13 +312,14 @@ void main() {
     expectReadyForNextUpload();
   });
 
-  testWidgets('cancelling next camera shot retains earlier shots', (tester) async {
+  testWidgets('back from the camera retains already registered shots', (tester) async {
     selectedPhotos.clear();
     await open(tester);
     await tester.tap(find.text('카메라'));
-    await waitForCameraDialog(tester, 1);
-    cancelCapture = true;
-    await tester.tap(find.text('계속 촬영'));
+    await waitForCameraShot(tester, 0);
+    await tester.tap(find.byKey(const ValueKey('camera-shutter')));
+    await waitForCameraShot(tester, 1);
+    await tester.binding.handlePopRoute();
     await waitForCameraDone(tester);
     expect(find.byType(AlertDialog), findsNothing);
     expect(find.text('사진 선택 (1장)'), findsOneWidget);
@@ -326,17 +330,84 @@ void main() {
   });
 
   testWidgets('camera error preserves selection and leaves gallery usable', (tester) async {
-    failCapture = true;
+    camera.failShot = true;
     await open(tester);
     await tester.tap(find.text('카메라'));
-    await tester.pumpAndSettle();
+    await waitForCameraShot(tester, 0);
+    await tester.tap(find.byKey(const ValueKey('camera-shutter')));
+    await waitForCameraShot(tester, 0);
     expect(find.textContaining('카메라를 열 수 없습니다.'), findsOneWidget);
+    await tester.tap(find.text('완료 (0장)'));
+    await waitForCameraDone(tester);
     expect(find.text('사진 선택 (1장)'), findsOneWidget);
     expect(sends, 0);
     await tester.tap(find.text('사진 선택 (1장)'));
     await tester.pumpAndSettle();
     expect(events.last, 'pick');
     expect(find.text('사진 선택 (2장)'), findsOneWidget);
+  });
+
+  testWidgets('registration failure retries the same shot without another capture', (tester) async {
+    await open(tester);
+    await tester.tap(find.text('카메라'));
+    await waitForCameraShot(tester, 0);
+    failRegistration = true;
+    await tester.tap(find.byKey(const ValueKey('camera-shutter')));
+    await waitForCameraShot(tester, 0);
+    expect(find.textContaining('사진 저장 실패'), findsOneWidget);
+    failRegistration = false;
+    await tester.tap(find.byKey(const ValueKey('camera-shutter')));
+    await waitForCameraShot(tester, 1);
+    expect(camera.shots, 1);
+    expect(events.where((event) => event == 'registerCapture').length, 2);
+    await tester.tap(find.text('완료 (1장)'));
+    await waitForCameraDone(tester);
+    expect(find.text('사진 선택 (2장)'), findsOneWidget);
+  });
+
+  testWidgets('backgrounding during a shot waits for saving before releasing camera', (tester) async {
+    await open(tester);
+    await tester.tap(find.text('카메라'));
+    await waitForCameraShot(tester, 0);
+    camera.pendingShot = Completer<void>();
+    await tester.tap(find.byKey(const ValueKey('camera-shutter')));
+    await tester.pump();
+    final releases = camera.releases;
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    expect(camera.releases, releases);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    camera.pendingShot!.complete();
+    await waitForCameraShot(tester, 1);
+    expect(camera.releases, greaterThan(releases));
+    expect(camera.initializations, greaterThan(1));
+    expect(cameraShots, 1);
+    await tester.tap(find.text('완료 (1장)'));
+    await waitForCameraDone(tester);
+  });
+
+  testWidgets('camera quality, zoom, brightness and tap focus apply to the device', (tester) async {
+    await open(tester);
+    await tester.tap(find.text('카메라'));
+    await waitForCameraShot(tester, 0);
+    expect(camera.resolution, ResolutionPreset.max);
+    await tester.tap(find.text('최대'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('높음').last);
+    await waitForCameraShot(tester, 0);
+    expect(camera.resolution, ResolutionPreset.high);
+    await tester.tap(find.byKey(const ValueKey('fake-camera-preview')));
+    await tester.pumpAndSettle();
+    expect(camera.focusPoint!.dx, closeTo(0.5, 0.1));
+    expect(camera.focusPoint!.dy, closeTo(0.5, 0.1));
+    await tester.drag(find.byType(Slider).first, const Offset(80, 0));
+    await tester.pumpAndSettle();
+    expect(camera.zoom, greaterThan(1));
+    await tester.drag(find.byType(Slider).last, const Offset(50, 0));
+    await tester.pumpAndSettle();
+    expect(camera.exposure, greaterThan(0));
+    await tester.tap(find.text('완료 (0장)'));
+    await waitForCameraDone(tester);
   });
 }
 
