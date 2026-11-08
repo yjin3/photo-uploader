@@ -83,6 +83,16 @@ class MainActivity : FlutterActivity() {
                             else runWork(result) { importCameraPhoto(path); selection() }
                         }
                     }
+                    "prepareUpload" -> {
+                        val path = call.argument<String>("path")
+                        val photo = records().find { it.getString("path") == path }
+                        if (photo == null || state.getBoolean("uploaded", false)) {
+                            result.error("INVALID_PHOTO", "전송할 선택 사진이 없습니다.", null)
+                        } else runWork(result) {
+                            UploadImageProcessor.prepare(File(photo.getString("path")), photo.getString("name"),
+                                File(cacheDir, "upload_prepared"), call.argument<Boolean>("optimize") == true)
+                        }
+                    }
                     "pick" -> {
                         if (state.getBoolean("uploaded", false)) {
                             result.error("UPLOADED", "전송한 사진의 삭제를 먼저 완료하세요.", null)
@@ -138,6 +148,7 @@ class MainActivity : FlutterActivity() {
                                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                             } catch (_: SecurityException) { /* URI already removed. */ }
                         }
+                        File(cacheDir, "upload_prepared").listFiles()?.forEach { it.delete() }
                         null
                     }
                     else -> result.notImplemented()

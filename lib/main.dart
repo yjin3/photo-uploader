@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'camera_page.dart';
+import 'prepared_photo.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -54,7 +55,8 @@ class _UploadPageState extends State<UploadPage> {
   String _address = _exampleAddress;
   bool _deleteAfterUpload = true;
   bool _cropMonitor = true;
-  String _cropSummary = '';
+  final _prepared = <String, PreparedPhoto>{};
+  String _preparing = '';
   bool _loading = true;
   bool _busy = false;
   bool _uploaded = false;
@@ -95,11 +97,47 @@ class _UploadPageState extends State<UploadPage> {
       final selection = await _originals.invokeMapMethod<String, dynamic>('recover');
       if (mounted && selection != null) _applySelection(selection);
       if (selection?['warning'] != null) _showMessage(selection!['warning']);
+      if (!_uploaded) await _prepareSelection();
     } catch (error) {
       _showMessage('초기화 실패: $error');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() { _loading = false; _preparing = ''; });
     }
+  }
+
+  Future<void> _prepareSelection() async {
+    for (var index = 0; index < _photos.length; index++) {
+      final photo = _photos[index];
+      if (mounted) setState(() => _preparing = '전송 사진 준비 ${index + 1}/${_photos.length}');
+      final data = await _originals.invokeMapMethod<String, dynamic>('prepareUpload', {
+        'path': photo.path,
+        'optimize': _cropMonitor,
+      });
+      if (data == null) throw StateError('전송 사진 준비 결과가 없습니다.');
+      if (!mounted) return;
+      setState(() => _prepared[photo.path] = PreparedPhoto.fromMap(data));
+    }
+    if (mounted) setState(() => _preparing = '');
+  }
+
+  Future<void> _changeOptimization(bool value) async {
+    setState(() { _cropMonitor = value; _busy = true; _prepared.clear(); });
+    try { await _prepareSelection(); } catch (error) {
+      _showMessage('전송 사진 준비 실패: $error');
+    } finally {
+      if (mounted) setState(() { _busy = false; _preparing = ''; });
+    }
+  }
+
+  String get _transferSummary {
+    if (_prepared.length != _photos.length || _photos.isEmpty) return '';
+    final source = _prepared.values.fold<int>(0, (sum, item) => sum + item.sourceBytes);
+    final upload = _prepared.values.fold<int>(0, (sum, item) => sum + item.uploadBytes);
+    String size(int bytes) => bytes < 1024 * 1024
+        ? '${(bytes / 1024).toStringAsFixed(1)}KB'
+        : '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
+    final saved = source == 0 ? 0 : ((source - upload) * 100 / source).round();
+    return '전송 ${size(upload)} / 원본 ${size(source)} · $saved% 감소';
   }
 
   void _applySelection(Map<String, dynamic> selection) {
@@ -113,6 +151,7 @@ class _UploadPageState extends State<UploadPage> {
             name: photo['name'] as String,
           );
         }));
+      _prepared.removeWhere((path, _) => !_photos.any((photo) => photo.path == path));
       _uploaded = selection['uploaded'] as bool;
       // Restore the uploaded batch's choice on recovery. A new selection keeps
       // the user's current checkbox value for the next upload.
@@ -202,10 +241,11 @@ class _UploadPageState extends State<UploadPage> {
       final selected = await _originals.invokeMapMethod<String, dynamic>('pick');
       if (!mounted) return;
       if (selected != null) _applySelection(selected);
+      await _prepareSelection();
     } catch (error) {
       _showMessage('사진 선택 실패: $error');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() { _busy = false; _preparing = ''; });
     }
   }
 
@@ -225,10 +265,11 @@ class _UploadPageState extends State<UploadPage> {
           },
         ),
       ));
+      if (mounted) await _prepareSelection();
     } catch (error) {
       _showMessage('카메라 촬영 실패: $error');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() { _busy = false; _preparing = ''; });
     }
   }
 
@@ -236,12 +277,12 @@ class _UploadPageState extends State<UploadPage> {
         context: context,
         builder: (context) => Dialog.fullscreen(
           child: Scaffold(
-            appBar: AppBar(title: Text(photo.name)),
+            appBar: AppBar(title: Text('${_prepared[photo.path]?.name ?? photo.name} · 전송 미리보기')),
             body: Center(
               child: InteractiveViewer(
                 minScale: 0.5,
                 maxScale: 8,
-                child: Image.file(File(photo.path), fit: BoxFit.contain),
+                child: Image.file(File(_prepared[photo.path]?.path ?? photo.path), fit: BoxFit.contain),
               ),
             ),
           ),
@@ -254,13 +295,17 @@ class _UploadPageState extends State<UploadPage> {
     final client = widget.createClient?.call() ?? http.Client();
     try {
       if (!_uploaded) {
+        // Recreate any cache files evicted since previewing; originals remain
+        // registered separately and are never added as a second multipart file.
+        await _prepareSelection();
         final endpoint = _serverUri(_address).replace(path: '/upload');
         final request = http.MultipartRequest('POST', endpoint)
           ..fields['tag'] = _tag.text
-          ..fields['crop_monitor'] = _cropMonitor.toString();
+          ..fields['crop_monitor'] = 'false';
         for (final photo in _photos) {
+          final prepared = _prepared[photo.path]!;
           request.files.add(await http.MultipartFile.fromPath(
-            'files', photo.path, filename: photo.name,
+            'files', prepared.path, filename: prepared.name,
           ));
         }
         final response = await (() async {
@@ -278,22 +323,6 @@ class _UploadPageState extends State<UploadPage> {
         // Persist the acknowledgement before any original deletion, so a process
         // restart can resume deletion without sending the same batch again.
         _uploaded = true;
-        _cropSummary = '';
-        if (_cropMonitor) {
-          try {
-            final data = jsonDecode(utf8.decode(response.bodyBytes));
-            if (data is Map && data['crop_requested'] == true) {
-              final crops = data['cropped'] is List ? (data['cropped'] as List).length : 0;
-              _cropSummary = data['crop_warning']?.toString() ?? (crops > 0
-                  ? '모니터 자동 보정 $crops장 · 원본도 PC에 보관'
-                  : '모니터 테두리 미검출 · 원본 저장');
-            } else {
-              _cropSummary = '자동 자르기를 사용하려면 PC 서버도 업데이트하세요.';
-            }
-          } catch (_) {
-            _cropSummary = 'PC 저장 완료 · 자동 자르기 결과를 확인하지 못했습니다.';
-          }
-        }
       }
       if (!_originalsDeleted) {
         await _originals.invokeMethod<void>('acknowledgeUpload', {
@@ -309,12 +338,12 @@ class _UploadPageState extends State<UploadPage> {
       final count = _photos.length;
       setState(() {
         _photos.clear();
+        _prepared.clear();
         _uploaded = false;
         _originalsDeleted = false;
       });
       _showMessage(
-        '${_deleteAfterUpload ? '$count장 전송 및 원본 삭제 완료' : '$count장 전송 완료'}'
-        '${_cropSummary.isEmpty ? '' : '\n$_cropSummary'}',
+        _deleteAfterUpload ? '$count장 전송 및 원본 삭제 완료' : '$count장 전송 완료',
         duration: const Duration(seconds: 3),
       );
     } on TimeoutException {
@@ -325,7 +354,7 @@ class _UploadPageState extends State<UploadPage> {
           : '전송 실패: $error\nTailscale 연결, PC 서버와 방화벽을 확인하세요.');
     } finally {
       client.close();
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() { _busy = false; _preparing = ''; });
     }
   }
 
@@ -350,6 +379,7 @@ class _UploadPageState extends State<UploadPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text('서버: $_address'),
+              if (_transferSummary.isNotEmpty) Text(_transferSummary),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -387,8 +417,8 @@ class _UploadPageState extends State<UploadPage> {
                             itemBuilder: (context, index) => InkWell(
                               onTap: _busy || _uploaded
                                   ? null : () => _preview(_photos[index]),
-                              child: widget.thumbnailBuilder?.call(_photos[index].path) ?? Image.file(
-                                File(_photos[index].path),
+                              child: widget.thumbnailBuilder?.call(_prepared[_photos[index].path]?.path ?? _photos[index].path) ?? Image.file(
+                                File(_prepared[_photos[index].path]?.path ?? _photos[index].path),
                                 fit: BoxFit.cover,
                                 cacheWidth: 400,
                                 errorBuilder: (_, error, stack) =>
@@ -408,10 +438,10 @@ class _UploadPageState extends State<UploadPage> {
               CheckboxListTile(
                 key: const ValueKey('crop-monitor'),
                 contentPadding: EdgeInsets.zero,
-                title: const Text('모니터 화면 자동 자르기'),
-                subtitle: const Text('PC에서 보정 · 원본도 함께 보관'),
+                title: const Text('전송 전 모니터 자르기·압축'),
+                subtitle: const Text('휴대폰에서 처리 · 최대 2560px · JPEG 90'),
                 value: _cropMonitor,
-                onChanged: locked ? null : (value) => setState(() => _cropMonitor = value ?? true),
+                onChanged: locked ? null : (value) => _changeOptimization(value ?? true),
               ),
               CheckboxListTile(
                 key: const ValueKey('delete-originals'),
@@ -441,7 +471,7 @@ class _UploadPageState extends State<UploadPage> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.upload),
-            label: Text(_busy ? '처리 중…' : _uploaded
+            label: Text(_preparing.isNotEmpty ? _preparing : _busy ? '처리 중…' : _uploaded
                 ? '전송 완료 처리 계속'
                 : 'PC로 전송'),
           ),

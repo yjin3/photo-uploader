@@ -33,6 +33,9 @@ void main() {
   var cameraShots = 0;
   late FakePhotoCamera camera;
   var failRegistration = false;
+  late List<Map<dynamic, dynamic>> prepareCalls;
+  File? optimizedFile;
+  var failPreparation = false;
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('photo_uploader_test_');
@@ -56,11 +59,14 @@ void main() {
     cameraShots = 0;
     camera = FakePhotoCamera(photo.path);
     failRegistration = false;
+    prepareCalls = [];
+    optimizedFile = null;
+    failPreparation = false;
     SharedPreferences.setMockInitialValues({
       'server_address': 'http://100.101.102.103:8000',
     });
     messenger.setMockMethodCallHandler(originals, (call) async {
-      events.add(call.method);
+      if (call.method != 'prepareUpload') events.add(call.method);
       switch (call.method) {
         case 'recover':
           return {
@@ -69,7 +75,7 @@ void main() {
             'deleteOriginals': deleteOriginals,
           };
         case 'pick':
-          selectedPhotos.add({'path': photo.path, 'name': 'photo.png'});
+          selectedPhotos.add({'path': '${photo.path}_gallery_${selectedPhotos.length}', 'name': 'photo.png'});
           return {
             'photos': List.of(selectedPhotos),
             'uploaded': false,
@@ -83,13 +89,26 @@ void main() {
           if (failRegistration) throw PlatformException(code: 'SAVE_FAILED', message: '사진 저장 실패');
           cameraShots++;
           selectedPhotos.add({
-            'path': photo.path,
+            'path': call.arguments['path'] as String,
             'name': '20261106_153000_${cameraShots.toString().padLeft(3, '0')}.jpg',
           });
           return {
             'photos': List.of(selectedPhotos),
             'uploaded': false,
             'deleteOriginals': true,
+          };
+        case 'prepareUpload':
+          prepareCalls.add(Map.of(call.arguments as Map));
+          if (failPreparation) throw PlatformException(code: 'PREPARE_FAILED', message: '전송 파일 준비 실패');
+          final selected = selectedPhotos.firstWhere((item) => item['path'] == call.arguments['path']);
+          final optimized = call.arguments['optimize'] == true ? optimizedFile : null;
+          return {
+            'path': optimized?.path ?? photo.path,
+            'name': optimized == null ? selected['name']! : 'processed.jpg',
+            'sourceBytes': photo.lengthSync(),
+            'uploadBytes': (optimized ?? photo).lengthSync(),
+            'cropped': optimized != null,
+            'note': '',
           };
         case 'acknowledgeUpload':
           expect(call.arguments['deleteOriginals'], deleteOriginals);
@@ -141,8 +160,14 @@ void main() {
         final body = latin1.decode(request.bodyBytes);
         expect(body, contains('name="tag"'));
         expect(body, contains('name="crop_monitor"'));
+        expect(body, contains('name="crop_monitor"\r\n\r\nfalse'));
         for (final selected in selectedPhotos) {
-          expect(body, contains('name="files"; filename="${selected['name']}"'));
+          final optimized = prepareCalls.last['optimize'] == true ? optimizedFile : null;
+          expect(body, contains('name="files"; filename="${optimized == null ? selected['name'] : 'processed.jpg'}"'));
+        }
+        if (optimizedFile != null && prepareCalls.last['optimize'] == true) {
+          expect(body, contains('SMALL_UPLOAD_ONLY'));
+          expect(body, isNot(contains(latin1.decode(photo.readAsBytesSync()))));
         }
         expect(RegExp('name="files"; filename=').allMatches(body).length, selectedPhotos.length);
         if (!requestHandled.isCompleted) requestHandled.complete();
@@ -408,6 +433,42 @@ void main() {
     expect(camera.exposure, greaterThan(0));
     await tester.tap(find.text('완료 (0장)'));
     await waitForCameraDone(tester);
+  });
+
+  testWidgets('only the prepared file is posted and server-side cropping is disabled', (tester) async {
+    optimizedFile = File('${directory.path}/prepared.jpg');
+    optimizedFile!.writeAsStringSync('SMALL_UPLOAD_ONLY');
+    await open(tester);
+    expect(prepareCalls.last['optimize'], true);
+    expect(find.textContaining('% 감소'), findsOneWidget);
+    await pressAndWait(tester, 'PC로 전송', finished.future);
+    expect(sends, 1);
+    expect(events, ['recover', 'post', 'acknowledgeUpload', 'deleteOriginals', 'finish']);
+    expectReadyForNextUpload();
+  });
+
+  testWidgets('turning optimization off requests the original once', (tester) async {
+    optimizedFile = File('${directory.path}/prepared.jpg');
+    optimizedFile!.writeAsStringSync('SMALL_UPLOAD_ONLY');
+    await open(tester);
+    await tester.tap(find.byKey(const ValueKey('crop-monitor')));
+    await tester.pumpAndSettle();
+    expect(prepareCalls.last['optimize'], false);
+    await pressAndWait(tester, 'PC로 전송', finished.future);
+    expect(prepareCalls.last['optimize'], false);
+    expect(sends, 1);
+    expectReadyForNextUpload();
+  });
+
+  testWidgets('preparation failure never posts or deletes originals', (tester) async {
+    await open(tester);
+    failPreparation = true;
+    await tester.tap(find.text('PC로 전송'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('전송 파일 준비 실패'), findsOneWidget);
+    expect(events, ['recover']);
+    expect(sends, 0);
+    expect(find.text('사진 선택 (1장)'), findsOneWidget);
   });
 }
 

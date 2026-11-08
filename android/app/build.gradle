@@ -34,3 +34,8 @@ android {
 flutter {
     source '../..'
 }
+
+dependencies {
+    implementation 'org.opencv:opencv:4.13.0'
+    implementation 'androidx.exifinterface:exifinterface:1.4.1'
+}
