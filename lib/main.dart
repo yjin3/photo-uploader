@@ -59,6 +59,7 @@ class _UploadPageState extends State<UploadPage> {
   String _address = _exampleAddress;
   bool _deleteAfterUpload = true;
   bool _cropMonitor = true;
+  bool _cameraCrop = true;
   bool _discardPending = false;
   final _prepared = <String, PreparedPhoto>{};
   String _preparing = '';
@@ -297,7 +298,7 @@ class _UploadPageState extends State<UploadPage> {
       await Navigator.of(context).push<void>(MaterialPageRoute(
         builder: (context) => CameraPage(
           createCamera: widget.createCamera,
-          initialCrop: _cropMonitor,
+          initialCrop: _cameraCrop,
           buildLastPreview: () {
             final photo = lastCapture;
             if (photo == null) return const SizedBox.shrink();
@@ -314,7 +315,7 @@ class _UploadPageState extends State<UploadPage> {
             if (selection == null) throw StateError('촬영 사진의 저장 결과가 없습니다.');
             if (!mounted) return;
             _applySelection(selection);
-            if (cropMonitor) setState(() => _cropMonitor = true);
+            setState(() => _cameraCrop = cropMonitor);
             lastCapture = _photos.last;
             await _preparePhoto(lastCapture!);
           },
@@ -561,8 +562,8 @@ class _UploadPageState extends State<UploadPage> {
           CheckboxListTile(
             key: const ValueKey('crop-monitor'),
             contentPadding: EdgeInsets.zero,
-            title: const Text('전송 전 모니터 자르기·압축'),
-            subtitle: const Text('휴대폰에서 처리 · 최대 2560px · JPEG 90'),
+            title: const Text('갤러리 사진 크롭·압축'),
+            subtitle: const Text('촬영 사진은 촬영할 때 선택한 설정으로 저장·전송'),
             value: _cropMonitor,
             onChanged:
                 locked ? null : (value) => _changeOptimization(value ?? true),

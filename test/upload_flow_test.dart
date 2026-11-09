@@ -103,11 +103,18 @@ void main() {
           expect(call.arguments['path'], startsWith('${photo.path}_'));
           if (failRegistration)
             throw PlatformException(code: 'SAVE_FAILED', message: '사진 저장 실패');
-          if (selectedPhotos
-              .every((photo) => photo['path'] != call.arguments['path'])) {
+          if (selectedPhotos.every(
+              (photo) => photo['captureSource'] != call.arguments['path'])) {
             cameraShots++;
+            final saved = File('${call.arguments['path']}_saved.jpg')
+              ..writeAsBytesSync(photo.readAsBytesSync());
+            if (call.arguments['cropMonitor'] == true)
+              saved.writeAsStringSync('CROPPED_CAPTURE_ONLY');
             selectedPhotos.add({
-              'path': call.arguments['path'] as String,
+              'path': saved.path,
+              'captureSource': call.arguments['path'],
+              'capturePrepared': true,
+              'capturedCropped': call.arguments['cropMonitor'],
               'cropMonitor': call.arguments['cropMonitor'],
               'name':
                   '20261106_153000_${cameraShots.toString().padLeft(3, '0')}.jpg',
@@ -125,14 +132,20 @@ void main() {
                 code: 'PREPARE_FAILED', message: '전송 파일 준비 실패');
           final selected = selectedPhotos
               .firstWhere((item) => item['path'] == call.arguments['path']);
-          final optimized =
-              call.arguments['optimize'] == true ? optimizedFile : null;
+          final captured = selected['capturePrepared'] == true;
+          final optimized = !captured && call.arguments['optimize'] == true
+              ? optimizedFile
+              : null;
+          final payload =
+              captured ? File(selected['path'] as String) : optimized ?? photo;
           return {
-            'path': optimized?.path ?? photo.path,
+            'path': payload.path,
             'name': optimized == null ? selected['name']! : 'processed.jpg',
             'sourceBytes': photo.lengthSync(),
-            'uploadBytes': (optimized ?? photo).lengthSync(),
-            'cropped': optimized != null && selected['cropMonitor'] != false,
+            'uploadBytes': payload.lengthSync(),
+            'cropped': captured
+                ? selected['capturedCropped'] == true
+                : optimized != null && selected['cropMonitor'] != false,
             'note': '',
           };
         case 'discardPhotos':
@@ -213,7 +226,8 @@ void main() {
                 expect(body, contains('name="crop_monitor"'));
                 expect(body, contains('name="crop_monitor"\r\n\r\nfalse'));
                 for (final selected in selectedPhotos) {
-                  final optimized = prepareCalls.last['optimize'] == true
+                  final optimized = selected['capturePrepared'] != true &&
+                          prepareCalls.last['optimize'] == true
                       ? optimizedFile
                       : null;
                   expect(
@@ -222,7 +236,9 @@ void main() {
                           'name="files"; filename="${optimized == null ? selected['name'] : 'processed.jpg'}"'));
                 }
                 if (optimizedFile != null &&
-                    prepareCalls.last['optimize'] == true) {
+                    prepareCalls.last['optimize'] == true &&
+                    selectedPhotos
+                        .every((item) => item['capturePrepared'] != true)) {
                   expect(body, contains('SMALL_UPLOAD_ONLY'));
                   expect(body,
                       isNot(contains(latin1.decode(photo.readAsBytesSync()))));
@@ -230,6 +246,14 @@ void main() {
                 expect(
                     RegExp('name="files"; filename=').allMatches(body).length,
                     selectedPhotos.length);
+                if (selectedPhotos.isNotEmpty &&
+                    selectedPhotos.every((item) =>
+                        item['capturePrepared'] == true &&
+                        item['capturedCropped'] == true)) {
+                  expect(body, contains('CROPPED_CAPTURE_ONLY'));
+                  expect(body,
+                      isNot(contains(latin1.decode(photo.readAsBytesSync()))));
+                }
                 if (!requestHandled.isCompleted) requestHandled.complete();
                 return http.Response(
                     httpStatus == 200 ? '{}' : 'disk full', httpStatus);
@@ -526,6 +550,7 @@ void main() {
     await tester.tap(find.text('카메라'));
     await waitForCameraShot(tester, 0);
     expect(camera.resolution, ResolutionPreset.max);
+    await tester.ensureVisible(find.text('최대'));
     await tester.tap(find.text('최대'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('높음').last);
@@ -535,9 +560,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(camera.focusPoint!.dx, closeTo(0.5, 0.1));
     expect(camera.focusPoint!.dy, closeTo(0.5, 0.1));
+    await tester.ensureVisible(find.byType(Slider).first);
     await tester.drag(find.byType(Slider).first, const Offset(80, 0));
     await tester.pumpAndSettle();
     expect(camera.zoom, greaterThan(1));
+    await tester.ensureVisible(find.byType(Slider).last);
     await tester.drag(find.byType(Slider).last, const Offset(50, 0));
     await tester.pumpAndSettle();
     expect(camera.exposure, greaterThan(0));
@@ -704,11 +731,10 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('camera-review')));
     await tester.pumpAndSettle();
     final review = tester.widget<PhotoReview>(find.byType(PhotoReview));
-    expect(review.uploadPath, optimizedFile!.path);
+    expect(review.uploadPath, selectedPhotos.last['path']);
     expect(review.sourcePath, selectedPhotos.last['path']);
-    await tester.tap(find.text('원본'));
-    await tester.pumpAndSettle();
-    expect(find.text('기기에 저장된 원본'), findsOneWidget);
+    expect(find.text('원본'), findsNothing,
+        reason: 'Captured photos keep only the final stored image');
     await tester.tap(find.byKey(const ValueKey('close-review')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('완료 (1장)'));
@@ -746,6 +772,44 @@ void main() {
     await tester.tap(find.text('완료 (1장)'));
     await waitForCameraDone(tester);
     expect(tester.takeException(), isNull);
+  });
+  testWidgets(
+      'a cropped capture uploads the saved crop once even with gallery processing off',
+      (tester) async {
+    selectedPhotos.clear();
+    await open(tester);
+    await tester.tap(find.text('카메라'));
+    await waitForCameraShot(tester, 0);
+    await tester.tap(find.byKey(const ValueKey('camera-shutter')));
+    await waitForCameraShot(tester, 1);
+    final savedPath = selectedPhotos.single['path'] as String;
+    expect(File(savedPath).readAsStringSync(), 'CROPPED_CAPTURE_ONLY');
+    await tester.tap(find.text('완료 (1장)'));
+    await waitForCameraDone(tester);
+    await tester.tap(find.byKey(const ValueKey('crop-monitor')));
+    await tester.pumpAndSettle();
+    expect(prepareCalls.last['optimize'], false);
+    expect(File(savedPath).readAsStringSync(), 'CROPPED_CAPTURE_ONLY');
+    await pressAndWait(tester, 'PC로 전송', finished.future);
+    expect(sends, 1);
+  });
+
+  testWidgets(
+      'gallery review still compares the original with a separate upload file',
+      (tester) async {
+    optimizedFile = File('${directory.path}/processed.jpg')
+      ..writeAsStringSync('SMALL_UPLOAD_ONLY');
+    await open(tester);
+    await tester
+        .tapAt(tester.getTopLeft(find.byType(GridView)) + const Offset(40, 40));
+    await tester.pumpAndSettle();
+    expect(tester.widget<PhotoReview>(find.byType(PhotoReview)).uploadPath,
+        optimizedFile!.path);
+    await tester.tap(find.text('원본'));
+    await tester.pumpAndSettle();
+    expect(find.text('기기에 저장된 원본'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('close-review')));
+    await tester.pumpAndSettle();
   });
 }
 

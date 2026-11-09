@@ -436,10 +436,14 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
                 ? const CircularProgressIndicator()
                 : const Icon(Icons.camera_alt, size: 72));
     final controls = <Widget>[
+      const Padding(
+          padding: EdgeInsets.all(8),
+          child: Text('저장 위치: Pictures/PhotoUploader')),
       SwitchListTile(
         key: const ValueKey('camera-crop'),
         title: const Text('모니터 자동 크롭'),
-        subtitle: Text(_cropCapture ? '초록 테두리 표시 · 촬영 사진에서 최종 검출' : '전체 사진 촬영'),
+        subtitle:
+            Text(_cropCapture ? '검출 성공 시 크롭본만 저장 · 원본 복원 불가' : '전체 사진 촬영'),
         value: _cropCapture,
         onChanged: enabled
             ? (value) async {

@@ -23,6 +23,7 @@ class _PhotoReviewState extends State<PhotoReview> {
   @override
   Widget build(BuildContext context) {
     final path = _original ? widget.sourcePath : widget.uploadPath;
+    final compare = widget.sourcePath != widget.uploadPath;
     return Scaffold(
       appBar: AppBar(
           title: Text(widget.name),
@@ -33,16 +34,17 @@ class _PhotoReviewState extends State<PhotoReview> {
               icon: const Icon(Icons.close))),
       body: SafeArea(
           child: Column(children: [
-        SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment(value: false, label: Text('전송 사진')),
-              ButtonSegment(value: true, label: Text('원본'))
-            ],
-            selected: {
-              _original
-            },
-            onSelectionChanged: (values) =>
-                setState(() => _original = values.single)),
+        if (compare)
+          SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('전송 사진')),
+                ButtonSegment(value: true, label: Text('원본'))
+              ],
+              selected: {
+                _original
+              },
+              onSelectionChanged: (values) =>
+                  setState(() => _original = values.single)),
         Padding(
             padding: const EdgeInsets.all(12),
             child: Text(_original ? '기기에 저장된 원본' : widget.status,

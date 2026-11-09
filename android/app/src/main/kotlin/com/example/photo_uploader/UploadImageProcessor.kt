@@ -31,7 +31,9 @@ object UploadImageProcessor {
     fun forget(source: File, directory: File) {
         val identity = "${source.path}:${source.length()}:${source.lastModified()}"
         val stamps = listOf(false, true).flatMap { optimize ->
-            listOf("v1:$identity:$optimize") + listOf(false, true).map { crop -> "v2:$identity:$optimize:$crop" }
+            listOf("v1:$identity:$optimize") + listOf(false, true).flatMap { crop ->
+                listOf("v2:$identity:$optimize:$crop") + listOf(false, true).map { keepCrop -> "v3:$identity:$optimize:$crop:$keepCrop" }
+            }
         }
         for (stamp in stamps) {
             val metadata = File(directory, "${hash(stamp)}.json")
@@ -44,8 +46,9 @@ object UploadImageProcessor {
         }
     }
 
-    fun prepare(source: File, name: String, directory: File, optimize: Boolean, crop: Boolean = true): Map<String, Any> {
-        val stamp = "v2:${source.path}:${source.length()}:${source.lastModified()}:$optimize:$crop"
+    fun prepare(source: File, name: String, directory: File, optimize: Boolean, crop: Boolean = true,
+                keepCrop: Boolean = false): Map<String, Any> {
+        val stamp = "v3:${source.path}:${source.length()}:${source.lastModified()}:$optimize:$crop:$keepCrop"
         val key = hash(stamp)
         directory.mkdirs()
         val metadata = File(directory, "$key.json")
@@ -58,7 +61,7 @@ object UploadImageProcessor {
                     "cropped" to data.getBoolean("cropped"), "note" to data.getString("note"))
             } catch (_: Exception) { /* Recreate an expired/corrupt cache entry. */ }
         }
-        val result = prepareUncached(source, name, directory, optimize, crop)
+        val result = prepareUncached(source, name, directory, optimize, crop, keepCrop)
         try {
             metadata.writeText(JSONObject(result).toString())
         } catch (error: Exception) {
@@ -70,7 +73,8 @@ object UploadImageProcessor {
         return result
     }
 
-    private fun prepareUncached(source: File, name: String, directory: File, optimize: Boolean, crop: Boolean = true): Map<String, Any> {
+    private fun prepareUncached(source: File, name: String, directory: File, optimize: Boolean, crop: Boolean,
+                                keepCrop: Boolean): Map<String, Any> {
         val sourceBytes = source.length()
         fun original(reason: String = "") = mapOf<String, Any>(
             "path" to source.path, "name" to name, "sourceBytes" to sourceBytes,
@@ -97,6 +101,8 @@ object UploadImageProcessor {
             Utils.bitmapToMat(bitmap, image)
             bitmap.recycle()
             result = if (crop) cropScreen(image) else null
+            if (keepCrop && result == null) return original(if (crop)
+                "모니터 테두리 미검출 · 전체 사진 보관" else "크롭 없이 전체 사진 보관")
             val pixels = result ?: image
             val encodedBitmap = Bitmap.createBitmap(pixels.cols(), pixels.rows(), Bitmap.Config.ARGB_8888)
             outputBitmap = encodedBitmap
@@ -109,7 +115,7 @@ object UploadImageProcessor {
             }
             // Cropping/re-encoding an already optimized PNG or JPEG can increase
             // its size. In that case transmit the smaller original, once.
-            if (output.length() >= sourceBytes) {
+            if (output.length() >= sourceBytes && !(keepCrop && result != null)) {
                 output.delete()
                 return original("가공본보다 작은 원본 전송")
             }

@@ -158,7 +158,15 @@ class MainActivity : FlutterActivity() {
                         if (photo == null || state.getBoolean("uploaded", false)) {
                             result.error("INVALID_PHOTO", "전송할 선택 사진이 없습니다.", null)
                         } else runWork(result) {
-                            UploadImageProcessor.prepare(File(photo.getString("path")), photo.getString("name"),
+                            if (photo.optBoolean("capturePrepared")) {
+                                // The public gallery photo is already the final capture.
+                                // Its selected copy contains the same bytes, with no second crop.
+                                val source = File(photo.getString("path"))
+                                check(source.isFile && source.length() > 0) { "촬영 사진이 없습니다." }
+                                mapOf("path" to source.path, "name" to photo.getString("name"),
+                                    "sourceBytes" to source.length(), "uploadBytes" to source.length(),
+                                    "cropped" to photo.optBoolean("capturedCropped"), "note" to photo.optString("captureNote"))
+                            } else UploadImageProcessor.prepare(File(photo.getString("path")), photo.getString("name"),
                                 File(cacheDir, "upload_prepared"), call.argument<Boolean>("optimize") == true,
                                 photo.optBoolean("cropMonitor", true))
                         }
@@ -251,6 +259,7 @@ class MainActivity : FlutterActivity() {
     private fun selection(): Map<String, Any> = mapOf(
         "photos" to records().map { item -> mapOf(
             "path" to item.getString("path"), "name" to item.getString("name"),
+            "capturePrepared" to item.optBoolean("capturePrepared"),
             "cropMonitor" to item.optBoolean("cropMonitor", true)) },
         "uploaded" to state.getBoolean("uploaded", false),
         "discardPending" to state.contains("discardPaths"),
@@ -300,7 +309,10 @@ class MainActivity : FlutterActivity() {
         item.optString("captureSource").takeIf { it.isNotEmpty() }?.let { path ->
             val temporary = File(path).canonicalFile
             val roots = listOfNotNull(cacheDir, externalCacheDir, filesDir).map { it.canonicalPath + File.separator }
-            if (roots.any { temporary.path.startsWith(it) }) temporary.delete()
+            if (roots.any { temporary.path.startsWith(it) }) {
+                UploadImageProcessor.forget(temporary, File(cacheDir, "upload_prepared"))
+                temporary.delete()
+            }
         }
         try {
             contentResolver.releasePersistableUriPermission(Uri.parse(item.getString("uri")),
@@ -369,6 +381,7 @@ class MainActivity : FlutterActivity() {
                 }
             }
             state.edit().remove("cameraImport").commit()
+            cleanCaptureSource(path)
             return
         }
         val source = File(path).canonicalFile
@@ -417,12 +430,29 @@ class MainActivity : FlutterActivity() {
             }
         }
         val uri = Uri.parse(target.getString("uri"))
+        // Process before publishing to MediaStore. Only one public photo is
+        // retained: a crop on success, or the full photo when disabled/not found.
+        val crop = target.optBoolean("cropMonitor", true)
+        val prepared = UploadImageProcessor.prepare(source, target.getString("name"),
+            File(cacheDir, "upload_prepared"), crop, crop, true)
+        target.put("capturePrepared", true).put("capturedCropped", prepared.getValue("cropped"))
+            .put("captureNote", prepared.getValue("note"))
+        check(state.edit().putString("cameraImport", target.toString()).commit()) { "촬영 가공 정보 저장 실패" }
         val output = contentResolver.openOutputStream(uri, "wt")
             ?: throw IllegalStateException("촬영 원본을 저장할 수 없습니다.")
-        output.use { destination -> source.inputStream().use { it.copyTo(destination) } }
+        output.use { destination -> File(prepared.getValue("path") as String).inputStream().use { it.copyTo(destination) } }
         acceptCameraPhoto(target)
         check(state.edit().remove("cameraImport").commit()) { "촬영 완료 정보 저장 실패" }
-        source.delete()
+        cleanCaptureSource(path)
+    }
+
+    private fun cleanCaptureSource(path: String) {
+        val temporary = File(path).canonicalFile
+        val roots = listOfNotNull(cacheDir, externalCacheDir, filesDir).map { it.canonicalPath + File.separator }
+        if (roots.any { temporary.path.startsWith(it) }) {
+            UploadImageProcessor.forget(temporary, File(cacheDir, "upload_prepared"))
+            temporary.delete()
+        }
     }
 
     private fun discardCameraPhoto() {
@@ -446,7 +476,10 @@ class MainActivity : FlutterActivity() {
                 items.add(JSONObject().put("uri", uri.toString())
                     .put("path", file.absolutePath).put("name", capture.getString("name"))
                     .put("captureSource", capture.optString("path"))
-                    .put("kind", "camera").put("cropMonitor", capture.optBoolean("cropMonitor", true)).put("deleted", false))
+                    .put("kind", "camera").put("cropMonitor", capture.optBoolean("cropMonitor", true))
+                    .put("capturePrepared", capture.optBoolean("capturePrepared"))
+                    .put("capturedCropped", capture.optBoolean("capturedCropped"))
+                    .put("captureNote", capture.optString("captureNote")).put("deleted", false))
                 save(items)
             } catch (error: Exception) {
                 file.delete()
