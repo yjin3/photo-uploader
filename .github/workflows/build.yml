@@ -45,8 +45,19 @@ jobs:
       - name: Test upload and original deletion flow
         run: flutter test --no-pub --reporter expanded
       - name: Build arm64 release APK
-        run: flutter build apk --split-per-abi --target-platform android-arm64 --no-pub
+        if: github.event_name != 'pull_request'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/photo-uploader-release.p12"
+          trap 'rm -f "$ANDROID_KEYSTORE_PATH"' EXIT
+          python3 scripts/android_signing.py restore --output "$ANDROID_KEYSTORE_PATH"
+          flutter build apk --split-per-abi --target-platform android-arm64 --no-pub --build-number "$((1000 + GITHUB_RUN_NUMBER))"
       - name: Upload arm64 APK
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: photo-uploader-apk

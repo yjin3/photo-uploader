@@ -9,7 +9,20 @@ Tailscale로 연결된 Android → PC 사진 전송 앱. 로컬 Flutter/Android 
 3. 완료된 실행의 **photo-uploader-apk** Artifact를 다운로드하고 압축을 풉니다.
 4. `app-arm64-v8a-release.apk`를 Android 스마트폰에 설치합니다.
 
-Java 17과 실행 시점의 최신 stable Flutter를 사용합니다. Android 최소 API는 24 이상이며 Flutter 기본값이 더 높으면 따릅니다. APK는 개인 설치용 debug 키로 서명합니다. 검증한 Dart 의존성 버전은 저장소의 `pubspec.lock`에 고정합니다.
+Java 17과 실행 시점의 최신 stable Flutter를 사용합니다. Android 최소 API는 24 이상이며 Flutter 기본값이 더 높으면 따릅니다. APK는 고정 release 키로 서명하고 빌드 번호는 `1000 + GitHub Actions 실행 번호`로 증가시킵니다. 검증한 Dart 의존성 버전은 저장소의 `pubspec.lock`에 고정합니다.
+
+## 업데이트용 고정 서명 키
+
+이 프로젝트의 release 인증서 지문은 `android/release-certificate.sha256`에 고정합니다. 모든 빌드에서 같은 키를 사용해야 기존 앱 위에 설치할 수 있습니다. 기존 임시 debug 키로 설치한 앱은 새 고정 키로 전환할 때 한 번 제거하고 설치해야 합니다. 이후에는 같은 서명의 새 APK로 업데이트할 수 있습니다. APK 직접 설치에 필요한 ‘알 수 없는 앱 설치’ 허용은 서명과 별도입니다.
+
+한 번 생성한 로컬 키는 `.signing/photo-uploader-release.p12`에, GitHub 등록용 값은 `.signing/github-secrets.json`에 보관합니다. `.signing/`와 `android/key.properties`는 Git에서 제외합니다. `.signing/` 전체를 안전한 별도 위치에 백업하세요. 기존 인증서 지문이 있는 상태에서 로컬 키를 잃어버렸다면 새 키를 만들지 않고 백업을 복원해야 합니다.
+
+GitHub 저장소 **Settings → Secrets and variables → Actions**에 다음 두 Repository secret을 등록합니다. 값은 로컬 `.signing/github-secrets.json`의 같은 이름 항목을 사용합니다.
+
+- `ANDROID_KEYSTORE_BASE64`
+- `ANDROID_KEYSTORE_PASSWORD`
+
+Actions는 빌드 시 키를 임시 복원하고 인증서 지문을 확인한 뒤 서명합니다. 키가 없거나 다른 키이면 빌드를 중단하며 임시 키로 대체하지 않습니다. PR에서는 키를 사용하지 않고 분석·테스트만 실행합니다. 새 프로젝트에서 키를 처음 생성하거나 기존 키의 로컬 설정을 복원할 때는 Java `keytool`이 있는 환경에서 `python scripts/android_signing.py create`를 실행합니다.
 
 빌드 시간을 줄이기 위해 업로드 대상인 ARM64 APK만 생성합니다. Flutter/Pub 및 Gradle 캐시를 재사용하고 Gradle 작업 캐시와 병렬 실행을 활성화했습니다. 첫 실행이나 SDK/의존성 변경 시에는 다운로드와 초기 컴파일이 필요합니다. 같은 브랜치에 연속으로 push하면 이전 실행을 취소하고 최신 실행만 진행합니다. 전체 ABI가 필요하면 워크플로의 `--target-platform android-arm64` 옵션을 제거하세요.
 

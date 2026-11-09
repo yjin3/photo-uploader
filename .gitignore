@@ -18,3 +18,4 @@ __pycache__/
 pc_server/uploads/
 codedeco*
 .codedeco*/
+.signing/

@@ -50,13 +50,17 @@ class _PhotoReviewState extends State<PhotoReview> {
             child: Text(_original ? '기기에 저장된 원본' : widget.status,
                 key: const ValueKey('review-status'))),
         Expanded(
-            child: Center(
+            // Give the viewer the entire remaining screen. Centering the
+            // viewer itself shrinks its clip/gesture area to the initial image.
+            child: SizedBox.expand(
                 child: InteractiveViewer(
           key: ValueKey(path),
           minScale: 0.5,
           maxScale: 8,
-          child: widget.imageBuilder?.call(path) ??
-              Image.file(File(path), fit: BoxFit.contain),
+          child: Center(
+            child: widget.imageBuilder?.call(path) ??
+                Image.file(File(path), fit: BoxFit.contain),
+          ),
         ))),
       ])),
     );

@@ -4,6 +4,14 @@ plugins {
     id 'dev.flutter.flutter-gradle-plugin'
 }
 
+def signingProperties = new Properties()
+def signingPropertiesFile = rootProject.file('key.properties')
+if (signingPropertiesFile.exists()) {
+    signingPropertiesFile.withInputStream { signingProperties.load(it) }
+}
+def releaseStore = System.getenv('ANDROID_KEYSTORE_PATH') ?: signingProperties['storeFile']
+def releasePassword = System.getenv('ANDROID_KEYSTORE_PASSWORD') ?: signingProperties['storePassword']
+
 android {
     namespace 'com.example.photo_uploader'
     compileSdk flutter.compileSdkVersion
@@ -23,10 +31,18 @@ android {
         versionCode flutter.versionCode
         versionName flutter.versionName
     }
+    signingConfigs {
+        release {
+            storeFile releaseStore ? file(releaseStore) : null
+            storeType 'PKCS12'
+            storePassword releasePassword
+            keyAlias 'photo-uploader'
+            keyPassword releasePassword
+        }
+    }
     buildTypes {
         release {
-            // Personal sideload build. Configure a private release key for distribution.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
         }
     }
 }
