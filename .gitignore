@@ -16,3 +16,5 @@ android/key.properties
 __pycache__/
 *.pyc
 pc_server/uploads/
+codedeco*
+.codedeco*/
