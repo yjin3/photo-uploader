@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:photo_uploader/camera_page.dart';
+import 'package:photo_uploader/monitor_frame.dart';
 
 class FakePhotoCamera implements PhotoCamera {
   FakePhotoCamera(this.pathPrefix);
@@ -17,6 +18,20 @@ class FakePhotoCamera implements PhotoCamera {
   double zoom = 1;
   double exposure = 0;
   Offset? focusPoint;
+  bool focusLocked = false;
+  bool monitorDetection = false;
+  @override
+  final ValueNotifier<MonitorFrame> monitorFrame =
+      ValueNotifier(const MonitorFrame());
+  @override
+  Future<void> setMonitorDetection(bool enabled) async {
+    monitorDetection = enabled;
+  }
+
+  @override
+  Future<void> setFocusLocked(bool locked) async {
+    focusLocked = locked;
+  }
 
   @override
   double get maxZoom => 4;
@@ -57,6 +72,7 @@ class FakePhotoCamera implements PhotoCamera {
   @override
   Future<void> focus(Offset point) async {
     focusPoint = point;
+    focusLocked = true;
   }
 
   @override

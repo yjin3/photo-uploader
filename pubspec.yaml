@@ -15,6 +15,7 @@ dependencies:
   shared_preferences: ^2.5.3
 
 dev_dependencies:
+  camera_platform_interface: ^2.15.0
   flutter_test:
     sdk: flutter
 
