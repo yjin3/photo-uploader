@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import os
+import logging
 from pathlib import Path
 import re
 import shutil
@@ -159,6 +160,11 @@ def save_batch(files: list[UploadFile], tag: str, crop_monitor: bool = False) ->
         except Exception:
             shutil.rmtree(destination)
             raise
+        logging.getLogger("uvicorn.error").info(
+            "저장 완료 | 시간: %s | 태그: %s | 파일: %d개 | 저장 경로: %s",
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            suffix or "(없음)", len(names), destination.resolve(),
+        )
         return {"directory": destination.name, "files": names, "count": len(names),
                 "cropped": cropped_names, "crop_requested": crop_monitor,
                 "crop_warning": crop_warning}

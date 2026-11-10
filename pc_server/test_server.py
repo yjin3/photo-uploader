@@ -86,6 +86,24 @@ class FilenameTests(unittest.TestCase):
                 server.save_batch([photo("valid.jpg"), photo(GUID, b"unknown")], "")
             self.assertEqual(list(Path(temporary).iterdir()), [])
 
+    def test_success_log_contains_time_tag_count_and_full_destination(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(server, "UPLOAD_ROOT", Path(temporary)):
+            with self.assertLogs("uvicorn.error", level="INFO") as logs:
+                result = server.save_batch([photo("one.jpg"), photo("two.jpg")], "여행")
+            message = logs.output[0]
+            self.assertRegex(message, r"시간: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+            self.assertIn("태그: 여행 | 파일: 2개", message)
+            self.assertIn(str((Path(temporary) / result["directory"]).resolve()), message)
+
+    def test_empty_tag_is_logged_and_failed_batch_has_no_success_log(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(server, "UPLOAD_ROOT", Path(temporary)):
+            with self.assertLogs("uvicorn.error", level="INFO") as logs:
+                server.save_batch([photo("one.jpg")], "")
+            self.assertIn("태그: (없음)", logs.output[0])
+            with self.assertNoLogs("uvicorn.error", level="INFO"):
+                with self.assertRaises(HTTPException):
+                    server.save_batch([photo(GUID, b"unknown")], "실패")
+
 
 if __name__ == "__main__":
     unittest.main()
